@@ -1,0 +1,70 @@
+import {
+  AutocompleteInteraction,
+  ChatInputCommandInteraction,
+  EmbedBuilder,
+  SlashCommandBuilder,
+} from "discord.js";
+import { findPrefecture, searchPrefectures } from "../data/prefectures";
+import { fetchHourlyForecast } from "../services/openMeteo";
+import { logger } from "../utils/logger";
+
+export const data = new SlashCommandBuilder()
+  .setName("weather")
+  .setDescription("指定した都道府県の時間別天気予報を表示します")
+  .addStringOption((option) =>
+    option
+      .setName("prefecture")
+      .setDescription("都道府県名（例: 東京都）")
+      .setRequired(true)
+      .setAutocomplete(true),
+  );
+
+export async function autocomplete(interaction: AutocompleteInteraction): Promise<void> {
+  const focused = interaction.options.getFocused();
+  const matches = searchPrefectures(focused);
+  await interaction.respond(matches.map((p) => ({ name: p.name, value: p.name })));
+}
+
+function formatHour(date: Date): string {
+  return `${date.getHours().toString().padStart(2, "0")}時`;
+}
+
+export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
+  const prefectureName = interaction.options.getString("prefecture", true);
+  const prefecture = findPrefecture(prefectureName);
+
+  if (!prefecture) {
+    await interaction.reply({
+      content: `「${prefectureName}」という都道府県は見つかりませんでした。候補から選択してください。`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.deferReply();
+
+  try {
+    const forecast = await fetchHourlyForecast(prefecture.latitude, prefecture.longitude);
+
+    if (forecast.length === 0) {
+      await interaction.editReply("天気予報データを取得できませんでした。時間をおいて再度お試しください。");
+      return;
+    }
+
+    const lines = forecast.map(
+      (entry) => `${formatHour(entry.time)}: ${entry.weatherEmoji} ${Math.round(entry.temperature)}℃ (${entry.weatherLabel})`,
+    );
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🌤️ ${prefecture.name}の天気予報`)
+      .setDescription(lines.join("\n"))
+      .setColor(0x4fc3f7)
+      .setFooter({ text: "情報提供: Open-Meteo" })
+      .setTimestamp(new Date());
+
+    await interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    logger.error(`天気予報の取得に失敗しました (prefecture=${prefecture.name})`, error);
+    await interaction.editReply("天気予報の取得中にエラーが発生しました。時間をおいて再度お試しください。");
+  }
+}
