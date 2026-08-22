@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { EmbedBuilder, TextChannel } from "discord.js";
 import type { Client } from "discord.js";
 import { formatScale } from "../data/earthquakeScale";
+import { getChannelId } from "./settings";
 import { logger } from "../utils/logger";
 
 const P2P_QUAKE_WS_URL = "wss://api.p2pquake.net/v2/ws";
@@ -75,7 +76,7 @@ function describeTsunami(status: string | undefined): string {
   }
 }
 
-export function startEarthquakeWatcher(client: Client, channelId: string, minScale: number): void {
+export function startEarthquakeWatcher(client: Client, minScale: number): void {
   let reconnectDelay = RECONNECT_BASE_DELAY_MS;
   let closedByUs = false;
 
@@ -95,6 +96,12 @@ export function startEarthquakeWatcher(client: Client, channelId: string, minSca
 
         const maxScale = message.earthquake?.maxScale ?? -1;
         if (maxScale < minScale) return;
+
+        const channelId = getChannelId("earthquake");
+        if (!channelId) {
+          logger.warn("地震通知チャンネルが未設定のため通知をスキップしました。/config channel set コマンドで設定してください。");
+          return;
+        }
 
         const channel = await client.channels.fetch(channelId);
         if (!channel || !(channel instanceof TextChannel)) {

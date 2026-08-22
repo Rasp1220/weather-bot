@@ -3,7 +3,7 @@ import path from "node:path";
 import { Client, EmbedBuilder, TextChannel } from "discord.js";
 import { getCachedOfficeRegionMap, type OfficeRegionInfo } from "./jmaAreaMaster";
 import { describeWarningCode, shouldNotify } from "../data/warningCodes";
-import { config } from "../config";
+import { getChannelId, getRegionRoleId } from "./settings";
 import type { RegionName } from "../data/prefectures";
 import { logger } from "../utils/logger";
 
@@ -86,7 +86,7 @@ async function announceNewWarnings(
     return;
   }
 
-  const roleId = config.regionRoleIds[info.region as RegionName];
+  const roleId = getRegionRoleId(info.region as RegionName);
   const mention = roleId ? `<@&${roleId}> ` : "";
 
   const lines = newCodes.map((code) => {
@@ -113,7 +113,7 @@ async function announceNewWarnings(
 
 async function checkOffice(
   client: Client,
-  channelId: string,
+  channelId: string | undefined,
   officeCode: string,
   info: OfficeRegionInfo,
 ): Promise<void> {
@@ -144,16 +144,24 @@ async function checkOffice(
   state[officeCode] = nextForOffice;
 
   if (newlyIssued.size > 0) {
-    await announceNewWarnings(client, channelId, info, [...newlyIssued]);
+    if (channelId) {
+      await announceNewWarnings(client, channelId, info, [...newlyIssued]);
+    } else {
+      logger.warn(
+        `警報通知チャンネルが未設定のため通知をスキップしました (${info.prefecture}) 。/config channel set コマンドで設定してください。`,
+      );
+    }
   }
 }
 
-async function pollAll(client: Client, channelId: string): Promise<void> {
+async function pollAll(client: Client): Promise<void> {
   const officeMap = getCachedOfficeRegionMap();
   if (!officeMap || officeMap.size === 0) {
     logger.warn("気象庁エリアマスタが未取得のため、今回の警報チェックをスキップします。");
     return;
   }
+
+  const channelId = getChannelId("warning");
 
   for (const [officeCode, info] of officeMap) {
     try {
@@ -168,9 +176,9 @@ async function pollAll(client: Client, channelId: string): Promise<void> {
   saveState(state);
 }
 
-export function startJmaWarningWatcher(client: Client, channelId: string, intervalMinutes: number): void {
+export function startJmaWarningWatcher(client: Client, intervalMinutes: number): void {
   const run = (): void => {
-    pollAll(client, channelId).catch((error) =>
+    pollAll(client).catch((error) =>
       logger.error("警報チェックの実行中にエラーが発生しました。", error),
     );
   };
