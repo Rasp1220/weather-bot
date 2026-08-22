@@ -1,4 +1,5 @@
 import {
+  AttachmentBuilder,
   AutocompleteInteraction,
   ChatInputCommandInteraction,
   EmbedBuilder,
@@ -6,6 +7,7 @@ import {
 } from "discord.js";
 import { findPrefecture, searchPrefectures } from "../data/prefectures";
 import { fetchHourlyForecast } from "../services/openMeteo";
+import { renderForecastImage } from "../services/weatherImage";
 import { logger } from "../utils/logger";
 
 export const data = new SlashCommandBuilder()
@@ -23,10 +25,6 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
   const focused = interaction.options.getFocused();
   const matches = searchPrefectures(focused);
   await interaction.respond(matches.map((p) => ({ name: p.name, value: p.name })));
-}
-
-function formatHour(date: Date): string {
-  return `${date.getHours().toString().padStart(2, "0")}時`;
 }
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -51,18 +49,15 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       return;
     }
 
-    const lines = forecast.map(
-      (entry) => `${formatHour(entry.time)}: ${entry.weatherEmoji} ${Math.round(entry.temperature)}℃ (${entry.weatherLabel})`,
-    );
+    const imageBuffer = renderForecastImage(prefecture.name, forecast);
+    const attachment = new AttachmentBuilder(imageBuffer, { name: "forecast.png" });
 
     const embed = new EmbedBuilder()
-      .setTitle(`🌤️ ${prefecture.name}の天気予報`)
-      .setDescription(lines.join("\n"))
       .setColor(0x4fc3f7)
-      .setFooter({ text: "情報提供: Open-Meteo" })
+      .setImage("attachment://forecast.png")
       .setTimestamp(new Date());
 
-    await interaction.editReply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed], files: [attachment] });
   } catch (error) {
     logger.error(`天気予報の取得に失敗しました (prefecture=${prefecture.name})`, error);
     await interaction.editReply("天気予報の取得中にエラーが発生しました。時間をおいて再度お試しください。");

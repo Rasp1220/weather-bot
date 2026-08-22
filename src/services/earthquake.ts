@@ -9,6 +9,8 @@ const P2P_QUAKE_WS_URL = "wss://api.p2pquake.net/v2/ws";
 const JMA_QUAKE_CODE = 551;
 const RECONNECT_BASE_DELAY_MS = 5_000;
 const RECONNECT_MAX_DELAY_MS = 5 * 60_000;
+/** この震度（scale値）以上で @everyone を付ける。45 = 震度5弱。 */
+const EVERYONE_MENTION_MIN_SCALE = 45;
 
 interface JmaQuakeHypocenter {
   name?: string;
@@ -109,8 +111,16 @@ export function startEarthquakeWatcher(client: Client, minScale: number): void {
           return;
         }
 
-        await channel.send({ embeds: [buildEarthquakeEmbed(message)] });
-        logger.info(`地震情報を通知しました（最大震度: ${formatScale(maxScale)}）`);
+        const mentionEveryone = maxScale >= EVERYONE_MENTION_MIN_SCALE;
+
+        await channel.send({
+          content: mentionEveryone ? "@everyone" : undefined,
+          embeds: [buildEarthquakeEmbed(message)],
+          allowedMentions: { parse: mentionEveryone ? ["everyone"] : [] },
+        });
+        logger.info(
+          `地震情報を通知しました（最大震度: ${formatScale(maxScale)}${mentionEveryone ? " / @everyone" : ""}）`,
+        );
       } catch (error) {
         logger.error("地震情報メッセージの処理中にエラーが発生しました。", error);
       }
