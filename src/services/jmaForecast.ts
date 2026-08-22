@@ -66,6 +66,23 @@ function weatherCategoryFromText(text: string): WeatherCategory {
   return "cloud";
 }
 
+/**
+ * 気象庁の予報文（例:「雨夜遅くくもり所により夜のはじめ頃まで雷を伴い非常に激しく降る所がある」）から
+ * 表示用の短い天気名（例:「雷」「霧雨」「雪」）を抽出する。詳細な言い回しは表示上不要なため、
+ * 該当する現象のうち最も特徴的なものを優先順位付きで1つ選ぶ。
+ */
+export function shortWeatherLabel(text: string): string {
+  if (text.includes("雷")) return "雷";
+  if (text.includes("霧雨")) return "霧雨";
+  if (text.includes("雪")) return "雪";
+  if (text.includes("雨")) return "雨";
+  if (text.includes("霧")) return "霧";
+  if (text.includes("曇") && text.includes("晴")) return "晴れ時々曇り";
+  if (text.includes("曇")) return "曇り";
+  if (text.includes("晴")) return "晴れ";
+  return "不明";
+}
+
 function startOfDay(date: Date): Date {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);

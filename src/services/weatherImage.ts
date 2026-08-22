@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
 import type { WarningCodeInfo } from "../data/warningCodes";
-import type { PrefectureForecast, WeatherCategory } from "./jmaForecast";
+import { shortWeatherLabel, type PrefectureForecast, type WeatherCategory } from "./jmaForecast";
 
 const FONT_FAMILY = "Noto Sans JP";
 const REGULAR_FONT_PATH = path.resolve(process.cwd(), "assets/fonts/NotoSansJP-Regular.ttf");
@@ -258,10 +258,14 @@ export function renderForecastImage(
 
     drawWeatherIcon(ctx, period.weatherCategory, PADDING + 130, centerY, 1.1);
 
+    ctx.fillStyle = "#37474f";
+    ctx.font = `20px "${FONT_FAMILY}"`;
+    ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY - 4);
+
     if (period.pop != null) {
       ctx.fillStyle = "#0288d1";
       ctx.font = `16px "${FONT_FAMILY}"`;
-      ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 6);
+      ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 22);
     }
 
     const temperature = temperatureByTime.get(period.time.getTime());
