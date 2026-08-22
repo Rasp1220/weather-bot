@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { Client, EmbedBuilder, TextChannel } from "discord.js";
 import { getCachedOfficeRegionMap, type OfficeRegionInfo } from "./jmaAreaMaster";
-import { describeWarningCode, shouldNotify } from "../data/warningCodes";
+import { describeWarningCode, shouldNotify, type WarningCodeInfo } from "../data/warningCodes";
 import { getChannelId, getRegionRoleId } from "./settings";
 import type { RegionName } from "../data/prefectures";
 import { logger } from "../utils/logger";
@@ -72,6 +72,36 @@ async function fetchOfficeWarnings(officeCode: string): Promise<JmaWarningRespon
     throw new Error(`HTTP ${response.status}`);
   }
   return (await response.json()) as JmaWarningResponse;
+}
+
+const WARNING_TIER_ORDER: Record<WarningCodeInfo["tier"], number> = {
+  special: 0,
+  warning: 1,
+  advisory: 2,
+};
+
+/**
+ * 指定した予報区（office）で現在発表中の警報・注意報を、重複を除いて重要度順に返す。
+ * `/weather` コマンドでの現況表示用（発表状況の差分検知は行わない）。
+ */
+export async function fetchActiveWarnings(officeCode: string): Promise<WarningCodeInfo[]> {
+  const data = await fetchOfficeWarnings(officeCode);
+
+  const activeByCode = new Map<string, WarningCodeInfo>();
+  for (const areaType of data.areaTypes ?? []) {
+    for (const area of areaType.areas ?? []) {
+      for (const warning of area.warnings ?? []) {
+        if (INACTIVE_STATUSES.has(warning.status)) continue;
+        if (!activeByCode.has(warning.code)) {
+          activeByCode.set(warning.code, describeWarningCode(warning.code));
+        }
+      }
+    }
+  }
+
+  return [...activeByCode.values()].sort(
+    (a, b) => WARNING_TIER_ORDER[a.tier] - WARNING_TIER_ORDER[b.tier],
+  );
 }
 
 async function announceNewWarnings(

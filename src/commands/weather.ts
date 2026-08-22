@@ -2,13 +2,40 @@ import {
   AttachmentBuilder,
   AutocompleteInteraction,
   ChatInputCommandInteraction,
-  EmbedBuilder,
   SlashCommandBuilder,
 } from "discord.js";
 import { findPrefecture, searchPrefectures } from "../data/prefectures";
-import { fetchPrefectureForecast } from "../services/jmaForecast";
+import { getRepresentativeOfficeCode } from "../services/jmaAreaMaster";
+import { fetchPrefectureForecast, type PrefectureForecast } from "../services/jmaForecast";
+import { fetchActiveWarnings } from "../services/jmaWarnings";
 import { renderForecastImage } from "../services/weatherImage";
 import { logger } from "../utils/logger";
+
+const FORECAST_WINDOW_MS = 6 * 3600_000;
+
+/** 現在時刻から6時間先までの直近予報のみに絞り込む。 */
+function narrowToNextHours(forecast: PrefectureForecast, now: Date): PrefectureForecast {
+  const windowEnd = now.getTime() + FORECAST_WINDOW_MS;
+
+  let currentIndex = 0;
+  for (let i = 0; i < forecast.periods.length; i++) {
+    if (forecast.periods[i].time.getTime() <= now.getTime()) currentIndex = i;
+    else break;
+  }
+
+  const periods = forecast.periods
+    .slice(currentIndex)
+    .filter((period) => period.time.getTime() <= windowEnd);
+  if (periods.length === 0 && forecast.periods[currentIndex]) {
+    periods.push(forecast.periods[currentIndex]);
+  }
+
+  const temperatures = forecast.temperatures.filter(
+    (point) => point.time.getTime() >= now.getTime() && point.time.getTime() <= windowEnd,
+  );
+
+  return { ...forecast, periods, temperatures };
+}
 
 export const data = new SlashCommandBuilder()
   .setName("weather")
@@ -49,15 +76,22 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       return;
     }
 
-    const imageBuffer = renderForecastImage(prefecture.name, forecast);
+    const narrowedForecast = narrowToNextHours(forecast, new Date());
+
+    const officeCode = getRepresentativeOfficeCode(prefecture.name);
+    let warnings: Awaited<ReturnType<typeof fetchActiveWarnings>> = [];
+    if (officeCode) {
+      try {
+        warnings = await fetchActiveWarnings(officeCode);
+      } catch (error) {
+        logger.error(`警報情報の取得に失敗しました (prefecture=${prefecture.name})`, error);
+      }
+    }
+
+    const imageBuffer = renderForecastImage(prefecture.name, narrowedForecast, warnings);
     const attachment = new AttachmentBuilder(imageBuffer, { name: "forecast.png" });
 
-    const embed = new EmbedBuilder()
-      .setColor(0x4fc3f7)
-      .setImage("attachment://forecast.png")
-      .setTimestamp(new Date());
-
-    await interaction.editReply({ embeds: [embed], files: [attachment] });
+    await interaction.editReply({ files: [attachment] });
   } catch (error) {
     logger.error(`天気予報の取得に失敗しました (prefecture=${prefecture.name})`, error);
     await interaction.editReply("天気予報の取得中にエラーが発生しました。時間をおいて再度お試しください。");
