@@ -26,6 +26,7 @@ interface JmaAreaMaster {
 export interface OfficeRegionInfo {
   prefecture: string;
   region: RegionName;
+  officeName: string;
 }
 
 // 複数の予報区に分割されている道県について、細分区域名からの正規化ルール。
@@ -72,7 +73,7 @@ export async function loadJmaOfficeRegionMap(): Promise<Map<string, OfficeRegion
       unmapped++;
       continue;
     }
-    map.set(code, { prefecture: pref.name, region: pref.region });
+    map.set(code, { prefecture: pref.name, region: pref.region, officeName: office.name });
   }
 
   if (map.size === 0) {
@@ -88,6 +89,24 @@ export async function loadJmaOfficeRegionMap(): Promise<Map<string, OfficeRegion
 
 export function getCachedOfficeRegionMap(): Map<string, OfficeRegionInfo> | null {
   return cachedMap;
+}
+
+/**
+ * 天気予報API (forecast/data/forecast/{officeCode}.json) 用に、都道府県を代表する
+ * 予報区コードを1件返す。北海道・沖縄県など複数の予報区に分割されている道県は、
+ * 予報区名が都道府県名と完全一致するもの（＝道県全体を代表する主要予報区）を優先し、
+ * 該当が無ければ最初に見つかった予報区にフォールバックする。
+ */
+export function getRepresentativeOfficeCode(prefectureName: string): string | undefined {
+  if (!cachedMap) return undefined;
+
+  let fallback: string | undefined;
+  for (const [code, info] of cachedMap) {
+    if (info.prefecture !== prefectureName) continue;
+    if (info.officeName === prefectureName) return code;
+    if (!fallback) fallback = code;
+  }
+  return fallback;
 }
 
 export function startAreaMasterRefresh(): void {
