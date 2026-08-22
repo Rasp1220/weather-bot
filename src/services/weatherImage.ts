@@ -41,6 +41,8 @@ const TEMPERATURE_SECTION_HEIGHT = 74;
 const WEATHER_TEXT_X = PADDING + 180;
 /** 気温欄に表示する日数（今日・明日）。 */
 const TEMPERATURE_DAYS = 2;
+/** 降水確率を表示する下限(%)。0% のときは情報量が無いので表示しない。 */
+const POP_DISPLAY_THRESHOLD = 10;
 
 const WARNING_TIER_COLOR: Record<WarningCodeInfo["tier"], string> = {
   special: "#8e24aa",
@@ -346,7 +348,7 @@ function drawForecastRow(
   ctx.font = font(20);
   ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY - 4);
 
-  if (period.pop != null) {
+  if (period.pop != null && period.pop >= POP_DISPLAY_THRESHOLD) {
     ctx.fillStyle = "#0288d1";
     ctx.font = font(16);
     ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 22);
