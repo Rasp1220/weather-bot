@@ -7,12 +7,8 @@ import {
 } from "discord.js";
 import { findPrefecture, searchPrefectures } from "../data/prefectures";
 import { getRepresentativeOfficeCode } from "../services/jmaAreaMaster";
-import {
-  fetchPrefectureForecast,
-  type ForecastPeriod,
-  type PrefectureForecast,
-  type TemperaturePoint,
-} from "../services/jmaForecast";
+import { fetchPrefectureForecast, type ForecastPeriod, type PrefectureForecast } from "../services/jmaForecast";
+import { weatherCategoryFromText, weatherTextAtHour } from "../services/jmaWeatherText";
 import { fetchActiveWarnings } from "../services/jmaWarnings";
 import { renderForecastImage } from "../services/weatherImage";
 import type { WarningCodeInfo } from "../data/warningCodes";
@@ -31,63 +27,33 @@ function formatHourLabel(hour: Date, now: Date): string {
   return `${formatJstMonthDay(hour)} ${jstHour(hour)}時`;
 }
 
-/**
- * 時刻順に並んだ気温データを線形補間する。範囲外は端の値をそのまま使う。
- * 呼び出しごとに並べ替えないよう、ソート済みの配列を受け取る前提。
- */
-function interpolateTemperature(sorted: TemperaturePoint[], hour: Date): number | undefined {
-  if (sorted.length === 0) return undefined;
-
-  const target = hour.getTime();
-  const first = sorted[0];
-  const last = sorted[sorted.length - 1];
-  if (target <= first.time.getTime()) return first.temperature;
-  if (target >= last.time.getTime()) return last.temperature;
-
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const before = sorted[i];
-    const after = sorted[i + 1];
-    if (target < before.time.getTime() || target > after.time.getTime()) continue;
-
-    const span = after.time.getTime() - before.time.getTime();
-    if (span === 0) return before.temperature;
-    const ratio = (target - before.time.getTime()) / span;
-    return before.temperature + (after.temperature - before.temperature) * ratio;
-  }
-  return undefined;
-}
-
 /** 次の正時を起点に、1時間刻みで HOURLY_STEPS 時間分の予報を組み立てる。 */
 function buildHourlyForecast(forecast: PrefectureForecast, now: Date): PrefectureForecast {
   // JST は UTC との差が正時単位なので、絶対時刻を1時間単位で切り上げれば JST の次の正時になる。
   const startHour = Math.floor(now.getTime() / HOUR_MS) * HOUR_MS + HOUR_MS;
-  const sortedTemperatures = [...forecast.temperatures].sort(
-    (a, b) => a.time.getTime() - b.time.getTime(),
-  );
 
   const periods: ForecastPeriod[] = [];
-  const temperatures: TemperaturePoint[] = [];
 
   for (let i = 0; i < HOURLY_STEPS; i++) {
     const time = new Date(startHour + i * HOUR_MS);
-    // 気象庁の予報は数時間単位の時間帯で発表されるため、その時刻を含む時間帯の内容を使う。
+    // 気象庁の予報は日単位で発表されるため、その日の予報を取り出したうえで、
+    // 予報文中の「昼過ぎから」などの表現を頼りにその時刻の天気まで絞り込む。
     const base = findLatestAtOrBefore(forecast.periods, time) ?? forecast.periods[0];
+    const weatherText =
+      (base?.segments ? weatherTextAtHour(base.segments, jstHour(time)) : undefined) ??
+      base?.weatherText ??
+      "不明";
 
     periods.push({
       time,
       periodLabel: formatHourLabel(time, now),
-      weatherText: base?.weatherText ?? "不明",
-      weatherCategory: base?.weatherCategory ?? "cloud",
+      weatherText,
+      weatherCategory: weatherCategoryFromText(weatherText),
       pop: findLatestAtOrBefore(forecast.pops, time)?.pop,
     });
-
-    const temperature = interpolateTemperature(sortedTemperatures, time);
-    if (temperature != null) {
-      temperatures.push({ time, temperature });
-    }
   }
 
-  return { ...forecast, periods, temperatures };
+  return { ...forecast, periods };
 }
 
 /** 発表中の警報・注意報を取得する。取得できなくても予報自体は表示したいので例外は投げない。 */

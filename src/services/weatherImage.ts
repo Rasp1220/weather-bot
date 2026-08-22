@@ -2,9 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
 import type { WarningCodeInfo } from "../data/warningCodes";
-import { formatJstHm } from "../utils/jst";
+import { formatJstHm, jstDayDiff, formatJstMonthDay } from "../utils/jst";
 import { logger } from "../utils/logger";
-import { shortWeatherLabel, type PrefectureForecast, type WeatherCategory } from "./jmaForecast";
+import type { DailyTemperature, PrefectureForecast } from "./jmaForecast";
+import { shortWeatherLabel, type WeatherCategory } from "./jmaWeatherText";
 
 const FONT_FAMILY = "Noto Sans JP";
 const FONT_PATHS = [
@@ -36,7 +37,10 @@ const ROW_HEIGHT = 84;
 const FOOTER_HEIGHT = 46;
 const WARNING_HEADER_HEIGHT = 40;
 const WARNING_ROW_HEIGHT = 30;
+const TEMPERATURE_SECTION_HEIGHT = 74;
 const WEATHER_TEXT_X = PADDING + 180;
+/** 気温欄に表示する日数（今日・明日）。 */
+const TEMPERATURE_DAYS = 2;
 
 const WARNING_TIER_COLOR: Record<WarningCodeInfo["tier"], string> = {
   special: "#8e24aa",
@@ -209,6 +213,83 @@ function drawHeader(ctx: SKRSContext2D, prefectureName: string, officeName: stri
   ctx.fillText(`情報提供: 気象庁（${officeName}） ・ 取得時刻 ${formatJstHm(new Date())}`, PADDING, 88);
 }
 
+function formatDayLabel(date: Date, now: Date): string {
+  const dayDiff = jstDayDiff(date, now);
+  if (dayDiff <= 0) return "今日";
+  if (dayDiff === 1) return "明日";
+  return formatJstMonthDay(date);
+}
+
+/** 最高・最低気温を1日分描画する。 */
+function drawDayTemperature(
+  ctx: SKRSContext2D,
+  entry: DailyTemperature,
+  now: Date,
+  left: number,
+  width: number,
+  top: number,
+): void {
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#546e7a";
+  ctx.font = font(17, true);
+  ctx.fillText(formatDayLabel(entry.date, now), left, top + 30);
+
+  const valueY = top + 48;
+  const format = (value: number | undefined): string =>
+    value == null ? "--" : `${Math.round(value)}°C`;
+
+  ctx.font = font(14);
+  ctx.fillStyle = "#78909c";
+  ctx.fillText("最高", left, valueY);
+  ctx.fillStyle = "#d84315";
+  ctx.font = font(26, true);
+  ctx.fillText(format(entry.max), left + 34, valueY + 2);
+
+  const minLeft = left + Math.min(width / 2, 130);
+  ctx.font = font(14);
+  ctx.fillStyle = "#78909c";
+  ctx.fillText("最低", minLeft, valueY);
+  ctx.fillStyle = "#0277bd";
+  ctx.font = font(26, true);
+  ctx.fillText(format(entry.min), minLeft + 34, valueY + 2);
+}
+
+/**
+ * 日別の最高・最低気温を描画し、次のセクションの開始 Y 座標を返す。
+ * 気象庁は時間別の気温を発表しないため、気温はこの粒度でのみ表示する。
+ */
+function drawTemperatureSection(
+  ctx: SKRSContext2D,
+  dailyTemperatures: DailyTemperature[],
+  top: number,
+): number {
+  const now = new Date();
+  // 発表内容に前日分が残っている場合に「今日」として出さないよう、過去日は落とす。
+  const days = dailyTemperatures
+    .filter((entry) => jstDayDiff(entry.date, now) >= 0)
+    .slice(0, TEMPERATURE_DAYS);
+  if (days.length === 0) return top;
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+  ctx.fillRect(0, top, CARD_WIDTH, TEMPERATURE_SECTION_HEIGHT);
+
+  const usableWidth = CARD_WIDTH - PADDING * 2;
+  const columnWidth = usableWidth / days.length;
+
+  days.forEach((entry, index) => {
+    drawDayTemperature(ctx, entry, now, PADDING + columnWidth * index, columnWidth, top);
+  });
+
+  ctx.strokeStyle = "#cfd8dc";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(PADDING, top + TEMPERATURE_SECTION_HEIGHT - 1);
+  ctx.lineTo(CARD_WIDTH - PADDING, top + TEMPERATURE_SECTION_HEIGHT - 1);
+  ctx.stroke();
+
+  return top + TEMPERATURE_SECTION_HEIGHT;
+}
+
 /** 発表中の警報・注意報を描画し、次のセクションの開始 Y 座標を返す。 */
 function drawWarningSection(ctx: SKRSContext2D, warnings: WarningCodeInfo[], top: number): number {
   if (warnings.length === 0) return top;
@@ -243,7 +324,6 @@ function drawWarningSection(ctx: SKRSContext2D, warnings: WarningCodeInfo[], top
 function drawForecastRow(
   ctx: SKRSContext2D,
   period: PrefectureForecast["periods"][number],
-  temperature: number | undefined,
   top: number,
   striped: boolean,
 ): void {
@@ -263,19 +343,17 @@ function drawForecastRow(
 
   ctx.fillStyle = "#37474f";
   ctx.font = font(20);
-  ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY - 4);
+  ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY + 7);
 
   if (period.pop != null) {
-    ctx.fillStyle = "#0288d1";
-    ctx.font = font(16);
-    ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 22);
-  }
-
-  if (temperature != null) {
-    ctx.fillStyle = "#d84315";
-    ctx.font = font(28, true);
     ctx.textAlign = "right";
-    ctx.fillText(`${Math.round(temperature)}°C`, CARD_WIDTH - PADDING, centerY + 10);
+    ctx.fillStyle = "#78909c";
+    ctx.font = font(15);
+    ctx.fillText("降水確率", CARD_WIDTH - PADDING - 78, centerY + 7);
+
+    ctx.fillStyle = "#0288d1";
+    ctx.font = font(26, true);
+    ctx.fillText(`${period.pop}%`, CARD_WIDTH - PADDING, centerY + 9);
     ctx.textAlign = "left";
   }
 }
@@ -293,10 +371,26 @@ function drawFooter(ctx: SKRSContext2D, top: number): void {
   ctx.fillText("気象・災害通知bot", PADDING, top + 32);
 }
 
-function cardHeight(periodCount: number, warningCount: number): number {
+function cardHeight(periodCount: number, warningCount: number, temperatureDays: number): number {
   const warningSectionHeight =
     warningCount > 0 ? WARNING_HEADER_HEIGHT + warningCount * WARNING_ROW_HEIGHT : 0;
-  return HEADER_HEIGHT + warningSectionHeight + periodCount * ROW_HEIGHT + FOOTER_HEIGHT + PADDING;
+  const temperatureSectionHeight = temperatureDays > 0 ? TEMPERATURE_SECTION_HEIGHT : 0;
+  return (
+    HEADER_HEIGHT +
+    warningSectionHeight +
+    temperatureSectionHeight +
+    periodCount * ROW_HEIGHT +
+    FOOTER_HEIGHT +
+    PADDING
+  );
+}
+
+/** 実際に描画する気温欄の日数（過去日を除いた今日以降、最大 TEMPERATURE_DAYS 日）。 */
+function countTemperatureDays(dailyTemperatures: DailyTemperature[], now: Date): number {
+  return Math.min(
+    dailyTemperatures.filter((entry) => jstDayDiff(entry.date, now) >= 0).length,
+    TEMPERATURE_DAYS,
+  );
 }
 
 export function renderForecastImage(
@@ -304,12 +398,10 @@ export function renderForecastImage(
   forecast: PrefectureForecast,
   warnings: WarningCodeInfo[] = [],
 ): Buffer {
-  const { periods, temperatures, officeName } = forecast;
-  const temperatureByTime = new Map(
-    temperatures.map((point) => [point.time.getTime(), point.temperature]),
-  );
+  const { periods, dailyTemperatures, officeName } = forecast;
+  const temperatureDays = countTemperatureDays(dailyTemperatures, new Date());
 
-  const height = cardHeight(periods.length, warnings.length);
+  const height = cardHeight(periods.length, warnings.length, temperatureDays);
   const canvas = createCanvas(CARD_WIDTH, height);
   const ctx = canvas.getContext("2d");
   ctx.textBaseline = "alphabetic";
@@ -318,9 +410,10 @@ export function renderForecastImage(
   drawHeader(ctx, prefectureName, officeName);
 
   let rowY = drawWarningSection(ctx, warnings, HEADER_HEIGHT);
+  rowY = drawTemperatureSection(ctx, dailyTemperatures, rowY);
 
   periods.forEach((period, index) => {
-    drawForecastRow(ctx, period, temperatureByTime.get(period.time.getTime()), rowY, index % 2 === 1);
+    drawForecastRow(ctx, period, rowY, index % 2 === 1);
     rowY += ROW_HEIGHT;
   });
 

@@ -1,13 +1,18 @@
 import { getRepresentativeOfficeCode } from "./jmaAreaMaster";
+import {
+  parseWeatherSegments,
+  weatherCategoryFromText,
+  type WeatherCategory,
+  type WeatherSegment,
+} from "./jmaWeatherText";
 import { fetchJson } from "../utils/http";
-import { formatJstMonthDay, jstDayDiff, jstHour } from "../utils/jst";
+import { formatJstMonthDay, jstDateKey, jstDayDiff, jstHour } from "../utils/jst";
 import { findLatestAtOrBefore } from "../utils/timeSeries";
+
+export type { WeatherCategory } from "./jmaWeatherText";
 
 const forecastUrl = (officeCode: string): string =>
   `https://www.jma.go.jp/bosai/forecast/data/forecast/${officeCode}.json`;
-
-/** 天気予報アイコン画像描画用の大分類。 */
-export type WeatherCategory = "sun" | "sun-cloud" | "cloud" | "fog" | "rain" | "snow" | "thunder";
 
 export interface ForecastPeriod {
   time: Date;
@@ -18,11 +23,19 @@ export interface ForecastPeriod {
   weatherCategory: WeatherCategory;
   /** 降水確率(%)。データが対応する時間帯に無ければ undefined。 */
   pop?: number;
+  /**
+   * 予報文を時間帯ごとに分解したもの。
+   * 気象庁の予報文は1日分がまとまった1文なので、時刻別に表示する際はこれを使う。
+   */
+  segments?: WeatherSegment[];
 }
 
-export interface TemperaturePoint {
-  time: Date;
-  temperature: number;
+/** 日ごとの最高・最低気温。気象庁は時間別気温を発表しないため、予報値はこの粒度が上限。 */
+export interface DailyTemperature {
+  /** その日を代表する時刻（JST のその日のいずれかの発表時刻）。 */
+  date: Date;
+  min?: number;
+  max?: number;
 }
 
 export interface PopPoint {
@@ -33,7 +46,8 @@ export interface PopPoint {
 export interface PrefectureForecast {
   officeName: string;
   periods: ForecastPeriod[];
-  temperatures: TemperaturePoint[];
+  /** 日別の最高・最低気温（今日・明日など）。 */
+  dailyTemperatures: DailyTemperature[];
   /** 降水確率の生データ（概ね6時間毎）。時間単位の予報を組み立てる際に使用する。 */
   pops: PopPoint[];
 }
@@ -44,6 +58,9 @@ interface JmaForecastArea {
   weathers?: string[];
   pops?: string[];
   temps?: string[];
+  /** 週間予報 (data[1]) のみが持つ、明示的な最低・最高気温。 */
+  tempsMin?: string[];
+  tempsMax?: string[];
 }
 
 interface JmaForecastTimeSeries {
@@ -57,37 +74,6 @@ interface JmaForecastReport {
 }
 
 type JmaForecastResponse = JmaForecastReport[];
-
-function weatherCategoryFromText(text: string): WeatherCategory {
-  if (text.includes("雷")) return "thunder";
-  if (text.includes("雪")) return "snow";
-  if (text.includes("雨")) return "rain";
-  if (text.includes("霧")) return "fog";
-  if (text.includes("曇") && text.includes("晴")) return "sun-cloud";
-  if (text.includes("曇")) return "cloud";
-  if (text.includes("晴")) return "sun";
-  return "cloud";
-}
-
-/**
- * 気象庁の予報文（例:「雨夜遅くくもり所により夜のはじめ頃まで雷を伴い非常に激しく降る所がある」）から
- * 表示用の短い天気名（例:「雷」「霧雨」「雪」）を抽出する。詳細な言い回しは表示上不要なため、
- * 該当する現象のうち最も特徴的なものを優先順位付きで1つ選ぶ。
- */
-export function shortWeatherLabel(text: string): string {
-  if (text.includes("雷") && text.includes("雨")) return "雷雨";
-  if (text.includes("雷")) return "雷";
-  if (text.includes("霧雨")) return "霧雨";
-  if (text.includes("大雪")) return "大雪";
-  if (text.includes("雪")) return "雪";
-  if (text.includes("大雨")) return "大雨";
-  if (text.includes("雨")) return "雨";
-  if (text.includes("霧")) return "霧";
-  if (text.includes("曇") && text.includes("晴")) return "晴れ時々曇り";
-  if (text.includes("曇")) return "曇り";
-  if (text.includes("晴")) return "晴れ";
-  return "不明";
-}
 
 function formatPeriodLabel(time: Date, now: Date): string {
   const dayDiff = jstDayDiff(time, now);
@@ -123,6 +109,58 @@ function toNumericSeries<T>(
   return points;
 }
 
+/**
+ * 日別の最高・最低気温を組み立てる。
+ *
+ * 3日予報 (data[0].timeSeries[2]) の `temps` は「その日の 00 時ごろ＝最低気温、
+ * 09 時ごろ＝最高気温」という発表時刻の対で並んでおり、時間別の気温ではない。
+ * 発表時刻が欠ける日（夕方の発表では当日の最低気温が落ちるなど）に備えて、
+ * 週間予報 (data[1]) が持つ明示的な tempsMin / tempsMax で補完する。
+ */
+function buildDailyTemperatures(
+  shortTermSeries: JmaForecastTimeSeries | undefined,
+  weeklySeries: JmaForecastTimeSeries | undefined,
+): DailyTemperature[] {
+  const byDate = new Map<string, DailyTemperature>();
+
+  const entryFor = (time: Date): DailyTemperature => {
+    const key = jstDateKey(time);
+    const existing = byDate.get(key);
+    if (existing) return existing;
+
+    const created: DailyTemperature = { date: time };
+    byDate.set(key, created);
+    return created;
+  };
+
+  const shortTermArea = shortTermSeries?.areas?.[0];
+  shortTermSeries?.timeDefines.forEach((iso, index) => {
+    const value = parseNumeric(shortTermArea?.temps?.[index]);
+    if (value == null) return;
+
+    const time = new Date(iso);
+    const entry = entryFor(time);
+    // 09 時発表が最高気温、00 時発表が最低気温。念のため大小でも補正する。
+    if (jstHour(time) >= 9) {
+      entry.max = entry.max == null ? value : Math.max(entry.max, value);
+    } else {
+      entry.min = entry.min == null ? value : Math.min(entry.min, value);
+    }
+  });
+
+  const weeklyArea = weeklySeries?.areas?.[0];
+  weeklySeries?.timeDefines.forEach((iso, index) => {
+    const time = new Date(iso);
+    const entry = entryFor(time);
+    entry.min ??= parseNumeric(weeklyArea?.tempsMin?.[index]);
+    entry.max ??= parseNumeric(weeklyArea?.tempsMax?.[index]);
+  });
+
+  return [...byDate.values()]
+    .filter((entry) => entry.min != null || entry.max != null)
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+}
+
 export async function fetchPrefectureForecast(prefectureName: string): Promise<PrefectureForecast> {
   const officeCode = getRepresentativeOfficeCode(prefectureName);
   if (!officeCode) {
@@ -144,11 +182,8 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
   }
 
   const pops = toNumericSeries(popSeries, (area) => area.pops, (time, pop) => ({ time, pop }));
-  const temperatures = toNumericSeries(
-    tempSeries,
-    (area) => area.temps,
-    (time, temperature) => ({ time, temperature }),
-  );
+  // data[1] は週間予報。当日・翌日の気温が欠けている場合の補完に使う。
+  const dailyTemperatures = buildDailyTemperatures(tempSeries, data[1]?.timeSeries?.[1]);
 
   const now = new Date();
   const periods: ForecastPeriod[] = weatherSeries.timeDefines.map((iso, index) => {
@@ -160,13 +195,14 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
       weatherText,
       weatherCategory: weatherCategoryFromText(weatherText),
       pop: findLatestAtOrBefore(pops, time)?.pop,
+      segments: parseWeatherSegments(weatherText),
     };
   });
 
   return {
     officeName: report?.publishingOffice ?? prefectureName,
     periods,
-    temperatures,
+    dailyTemperatures,
     pops,
   };
 }

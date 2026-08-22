@@ -70,3 +70,9 @@ export function formatJstHm(date: Date): string {
   const { hour, minute } = jstParts(date);
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
+
+/** JST の暦日を表すキー（"2026-08-22"）。日ごとの集計に使う。 */
+export function jstDateKey(date: Date): string {
+  const { year, month, day } = jstParts(date);
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
