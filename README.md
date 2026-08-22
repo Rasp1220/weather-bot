@@ -126,9 +126,37 @@ sudo journalctl -u weather-bot -f
 
 `Restart=always` を設定しているため、プロセスが異常終了した場合も自動的に再起動します。
 
+### 停止・再起動にかかる時間について
+
+Bot は `SIGTERM`（`systemctl stop` / `systemctl restart` が送るシグナル）を受け取ると、
+WebSocket 接続・各種タイマ・Discord クライアントを閉じてから終了します（通常1秒未満）。
+終了処理は `src/lifecycle.ts` に集約されており、10秒以内に完了しない場合は強制終了します。
+
+`systemctl restart` に数十秒かかる場合は、以下を確認してください。
+
+- `journalctl -u weather-bot` に `SIGTERM を受信しました` が出ているか。
+  出ていない場合はプロセスがシグナルを受け取れていません。
+- ユニットに `TimeoutStopSec` が設定されているか。未設定だと既定値の90秒まで待ってから
+  `SIGKILL` されるため、終了処理が滞った際に停止が長引きます。
+
+なお `RestartSec=10` は**異常終了後に再起動するまでの待ち時間**であり、
+`systemctl restart` には影響しません（クラッシュ時の再接続ループを抑えるための設定です）。
+
 ## データソースに関する注意事項
 
 - **P2P地震情報 API**: [公式ドキュメント](https://www.p2pquake.net/develop/json_api_v2/)に基づき実装しています。無料・無保証で提供されているサービスです。
+- **気象庁 天気予報データ**: `https://www.jma.go.jp/bosai/forecast/data/forecast/{予報区コード}.json` を使用しています。`/weather` は実行のたびにこのAPIを取得しており、Bot 側でのキャッシュは行っていません。ただし**気象庁の発表そのものが1日3回（05時・11時・17時）の更新**であり、次の発表まで内容は変わりません。
+
+  このAPIのデータ粒度には以下の制約があり、表示もそれに合わせています。
+
+  | データ | 気象庁の発表粒度 | 表示 |
+  |---|---|---|
+  | 天気 (`weathers`) | **1日1文**（例:「くもり昼過ぎから雷を伴い雨」） | 文中の「昼過ぎから」「朝まで」「のち」を解釈して時間帯に割り当てる（`src/services/jmaWeatherText.ts`） |
+  | 降水確率 (`pops`) | **6時間ごと** | その時刻を含む6時間帯の値 |
+  | 気温 (`temps`) | **1日の最低・最高のみ** | 日別の最高／最低気温として表示 |
+
+  気象庁は時間別の気温・天気を発表していないため、時刻ごとに異なる気温や、6時間より細かい降水確率は表示できません。予報文に時間帯の記載が無い場合（例:「雨のちくもり」）は、記載のある区切りが無い範囲を均等に割り当てています。
+
 - **気象庁 警報・注意報データ**: `https://www.jma.go.jp/bosai/warning/data/warning/{予報区コード}.json` を使用しています。これは気象庁 防災情報ページが内部的に利用している**非公式・無保証**のエンドポイントです。仕様変更により動作しなくなる可能性があります。
   - 警報コードと名称の対応表は `src/data/warningCodes.ts` にあります。気象庁の公式資料や実際のAPIレスポンスと照合の上、必要に応じて調整してください。
   - 予報区コード → 都道府県 → 地方区分のマッピングは、気象庁の公開エリアマスタ（`https://www.jma.go.jp/bosai/common/const/area.json`）を起動時・24時間ごとに自動取得して構築しています（ハードコードしていないため、気象庁側の予報区構成変更にも追従できます）。
@@ -139,27 +167,38 @@ sudo journalctl -u weather-bot -f
 
 ```
 src/
-  index.ts                    Bot エントリーポイント
+  index.ts                    Bot エントリーポイント（コマンドの振り分け・各監視の起動）
+  lifecycle.ts                SIGTERM/SIGINT を受けた終了処理の一元管理
   config.ts                   環境変数 / config.json の読み込み
   data/
-    prefectures.ts            都道府県マスタ（地方区分・緯度経度）
+    prefectures.ts            都道府県マスタ（地方区分）
     warningCodes.ts           気象庁 警報・注意報コード対応表
-    weatherCodes.ts           Open-Meteo 天気コード → 絵文字対応表
     earthquakeScale.ts        震度スケール対応表
   services/
     earthquake.ts             P2P地震情報 WebSocket クライアント
     jmaAreaMaster.ts          気象庁エリアマスタ取得（予報区→地方区分マッピング）
     jmaWarnings.ts            警報・注意報ポーリング＆差分通知
-    openMeteo.ts              天気予報取得
+    jmaForecast.ts            気象庁 天気予報API の取得・整形
+    jmaWeatherText.ts         予報文の解釈（時間帯分解・天気ラベル・アイコン分類）
+    weatherImage.ts           天気予報カード画像の描画
     settings.ts               /config コマンドで変更する実行時設定の永続化ストア
   commands/
+    index.ts                  スラッシュコマンド一覧（振り分け・登録の共通定義）
     weather.ts                /weather スラッシュコマンド
     config.ts                 /config スラッシュコマンド（通知先チャンネル・地方ロール設定）
     deploy-commands.ts        スラッシュコマンド登録スクリプト
   utils/
-    logger.ts
+    discord.ts                通知先チャンネルの取得
+    http.ts                   外部API向け JSON 取得（タイムアウト・中断対応）
+    jsonStore.ts              data/ 配下 JSON の読み書き（アトミック保存）
+    jst.ts                    日本時間での日時整形
+    logger.ts                 ログ出力
+    time.ts                   時間定数と中断可能な待機
+    timeSeries.ts             時刻付き系列の検索ヘルパー
+assets/fonts/                 画像描画用の日本語フォント
 config.json                   地方ロールIDマッピングの初期値
 data/settings.json            /config コマンドで変更した設定の保存先（自動生成・gitignore対象）
+data/state.json               警報の発表状況（差分検知用・自動生成・gitignore対象）
 .env.example                  環境変数サンプル
 deploy/weather-bot.service    systemd サービスユニットサンプル
 ```

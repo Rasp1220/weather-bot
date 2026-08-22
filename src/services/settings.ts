@@ -1,8 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import { config } from "../config";
 import { PREFECTURES, type RegionName } from "../data/prefectures";
-import { logger } from "../utils/logger";
+import { dataFilePath, readJsonFile, writeJsonFile } from "../utils/jsonStore";
 
 /**
  * `/config` コマンドで変更可能な実行時設定（通知先チャンネル・地方ロール紐付け）の永続化ストア。
@@ -10,7 +8,8 @@ import { logger } from "../utils/logger";
  * data/settings.json への変更を優先する（コマンドでの変更を再起動後も保持するため）。
  */
 
-const SETTINGS_FILE = path.resolve(process.cwd(), "data", "settings.json");
+const SETTINGS_FILE = dataFilePath("settings.json");
+const SETTINGS_DESCRIPTION = "設定ファイル(data/settings.json)";
 
 export type NotificationTarget = "earthquake" | "warning";
 
@@ -21,41 +20,28 @@ interface SettingsData {
   regionRoleIds: Partial<Record<RegionName, string>>;
 }
 
-function defaultSettings(): SettingsData {
-  return {
+function loadSettings(): SettingsData {
+  const defaults: SettingsData = {
     channels: {
       earthquake: config.channels.earthquake,
       warning: config.channels.warning,
     },
     regionRoleIds: { ...config.regionRoleIds },
   };
+
+  const stored = readJsonFile<Partial<SettingsData>>(SETTINGS_FILE, SETTINGS_DESCRIPTION);
+  if (!stored) return defaults;
+
+  return {
+    channels: { ...defaults.channels, ...stored.channels },
+    regionRoleIds: { ...defaults.regionRoleIds, ...stored.regionRoleIds },
+  };
 }
 
-function loadSettings(): SettingsData {
-  const defaults = defaultSettings();
-  try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8")) as Partial<SettingsData>;
-      return {
-        channels: { ...defaults.channels, ...raw.channels },
-        regionRoleIds: { ...defaults.regionRoleIds, ...raw.regionRoleIds },
-      };
-    }
-  } catch (error) {
-    logger.warn("設定ファイル(data/settings.json)の読み込みに失敗しました。デフォルト値から開始します。", error);
-  }
-  return defaults;
-}
-
-let settings: SettingsData = loadSettings();
+const settings: SettingsData = loadSettings();
 
 function persist(): void {
-  try {
-    fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
-  } catch (error) {
-    logger.error("設定ファイル(data/settings.json)の保存に失敗しました。", error);
-  }
+  writeJsonFile(SETTINGS_FILE, settings, SETTINGS_DESCRIPTION);
 }
 
 export function getChannelId(target: NotificationTarget): string | undefined {
