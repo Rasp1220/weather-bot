@@ -1,0 +1,19 @@
+[Unit]
+Description=Disaster & Weather Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 実際の配置パスに合わせて変更してください
+WorkingDirectory=/opt/weather-bot
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=10
+# 実行ユーザーを固定する場合は以下を有効化してください
+# User=weather-bot
+# Group=weather-bot
+EnvironmentFile=/opt/weather-bot/.env
+
+[Install]
+WantedBy=multi-user.target
