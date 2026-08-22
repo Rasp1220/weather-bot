@@ -72,9 +72,12 @@ function weatherCategoryFromText(text: string): WeatherCategory {
  * 該当する現象のうち最も特徴的なものを優先順位付きで1つ選ぶ。
  */
 export function shortWeatherLabel(text: string): string {
+  if (text.includes("雷") && text.includes("雨")) return "雷雨";
   if (text.includes("雷")) return "雷";
   if (text.includes("霧雨")) return "霧雨";
+  if (text.includes("大雪")) return "大雪";
   if (text.includes("雪")) return "雪";
+  if (text.includes("大雨")) return "大雨";
   if (text.includes("雨")) return "雨";
   if (text.includes("霧")) return "霧";
   if (text.includes("曇") && text.includes("晴")) return "晴れ時々曇り";
