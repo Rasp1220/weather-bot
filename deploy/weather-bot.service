@@ -10,6 +10,10 @@ WorkingDirectory=/opt/weather-bot
 ExecStart=/usr/bin/node dist/index.js
 Restart=always
 RestartSec=10
+# Bot は SIGTERM を受け取ると WebSocket・タイマ・Discord 接続を閉じて数秒以内に終了する。
+# 既定の TimeoutStopSec（90秒）だと、万一終了処理が滞った場合に systemctl restart が
+# 90秒待たされるため、短めの上限を設定しておく。
+TimeoutStopSec=15
 # 実行ユーザーを固定する場合は以下を有効化してください
 # User=weather-bot
 # Group=weather-bot

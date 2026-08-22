@@ -1,25 +1,24 @@
 import { REST, Routes } from "discord.js";
+import { COMMANDS } from ".";
 import { config } from "../config";
-import { data as weatherCommand } from "./weather";
-import { data as configCommand } from "./config";
 import { logger } from "../utils/logger";
 
 async function main(): Promise<void> {
-  const commands = [weatherCommand.toJSON(), configCommand.toJSON()];
   const rest = new REST().setToken(config.discord.token);
+  const { clientId, guildId } = config.discord;
 
-  const route = config.discord.guildId
-    ? Routes.applicationGuildCommands(config.discord.clientId, config.discord.guildId)
-    : Routes.applicationCommands(config.discord.clientId);
+  const route = guildId
+    ? Routes.applicationGuildCommands(clientId, guildId)
+    : Routes.applicationCommands(clientId);
 
   logger.info(
-    config.discord.guildId
-      ? `ギルド(${config.discord.guildId})にスラッシュコマンドを登録します...`
+    guildId
+      ? `ギルド(${guildId})にスラッシュコマンドを登録します...`
       : "グローバルスラッシュコマンドを登録します（反映まで最大1時間程度かかる場合があります）...",
   );
 
-  await rest.put(route, { body: commands });
-  logger.info("スラッシュコマンドの登録が完了しました。");
+  await rest.put(route, { body: COMMANDS.map((command) => command.data.toJSON()) });
+  logger.info(`スラッシュコマンドの登録が完了しました（${COMMANDS.length}件）。`);
 }
 
 main().catch((error) => {

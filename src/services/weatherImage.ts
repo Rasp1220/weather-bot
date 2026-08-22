@@ -3,18 +3,31 @@ import path from "node:path";
 import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
 import type { WarningCodeInfo } from "../data/warningCodes";
 import { formatJstHm } from "../utils/jst";
+import { logger } from "../utils/logger";
 import { shortWeatherLabel, type PrefectureForecast, type WeatherCategory } from "./jmaForecast";
 
 const FONT_FAMILY = "Noto Sans JP";
-const REGULAR_FONT_PATH = path.resolve(process.cwd(), "assets/fonts/NotoSansJP-Regular.ttf");
-const BOLD_FONT_PATH = path.resolve(process.cwd(), "assets/fonts/NotoSansJP-Bold.ttf");
+const FONT_PATHS = [
+  "assets/fonts/NotoSansJP-Regular.ttf",
+  "assets/fonts/NotoSansJP-Bold.ttf",
+];
 
-if (fs.existsSync(REGULAR_FONT_PATH)) {
-  GlobalFonts.registerFromPath(REGULAR_FONT_PATH, FONT_FAMILY);
+/**
+ * 日本語フォントを登録する。未登録のままだと日本語が豆腐（□）になるため、
+ * ファイルが見つからない場合は警告を出して気付けるようにする。
+ */
+function registerFonts(): void {
+  for (const relativePath of FONT_PATHS) {
+    const fontPath = path.resolve(process.cwd(), relativePath);
+    if (fs.existsSync(fontPath)) {
+      GlobalFonts.registerFromPath(fontPath, FONT_FAMILY);
+    } else {
+      logger.warn(`日本語フォントが見つかりません: ${fontPath}（画像内の文字が正しく表示されない可能性があります）`);
+    }
+  }
 }
-if (fs.existsSync(BOLD_FONT_PATH)) {
-  GlobalFonts.registerFromPath(BOLD_FONT_PATH, FONT_FAMILY);
-}
+
+registerFonts();
 
 const CARD_WIDTH = 820;
 const PADDING = 32;
@@ -168,127 +181,150 @@ function drawWeatherIcon(
   }
 }
 
+function font(size: number, bold = false): string {
+  return `${bold ? "bold " : ""}${size}px "${FONT_FAMILY}"`;
+}
+
+function drawBackground(ctx: SKRSContext2D, height: number): void {
+  const background = ctx.createLinearGradient(0, 0, 0, height);
+  background.addColorStop(0, "#e3f2fd");
+  background.addColorStop(1, "#ffffff");
+  ctx.fillStyle = background;
+  ctx.fillRect(0, 0, CARD_WIDTH, height);
+}
+
+function drawHeader(ctx: SKRSContext2D, prefectureName: string, officeName: string): void {
+  const gradient = ctx.createLinearGradient(0, 0, CARD_WIDTH, HEADER_HEIGHT);
+  gradient.addColorStop(0, "#42a5f5");
+  gradient.addColorStop(1, "#478ed1");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, CARD_WIDTH, HEADER_HEIGHT);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = font(34, true);
+  ctx.fillText(`${prefectureName}の天気予報`, PADDING, 56);
+
+  ctx.font = font(18);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.fillText(`情報提供: 気象庁（${officeName}） ・ 取得時刻 ${formatJstHm(new Date())}`, PADDING, 88);
+}
+
+/** 発表中の警報・注意報を描画し、次のセクションの開始 Y 座標を返す。 */
+function drawWarningSection(ctx: SKRSContext2D, warnings: WarningCodeInfo[], top: number): number {
+  if (warnings.length === 0) return top;
+
+  const sectionHeight = WARNING_HEADER_HEIGHT + warnings.length * WARNING_ROW_HEIGHT;
+  ctx.fillStyle = "#fff3e0";
+  ctx.fillRect(0, top, CARD_WIDTH, sectionHeight);
+
+  ctx.fillStyle = "#e53935";
+  ctx.font = font(18, true);
+  ctx.textAlign = "left";
+  ctx.fillText("発表中の警報・注意報", PADDING, top + 27);
+
+  let rowY = top + WARNING_HEADER_HEIGHT;
+  for (const warning of warnings) {
+    const centerY = rowY + WARNING_ROW_HEIGHT / 2;
+
+    ctx.fillStyle = WARNING_TIER_COLOR[warning.tier];
+    ctx.beginPath();
+    ctx.arc(PADDING + 6, centerY - 5, 6, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.font = font(17, true);
+    ctx.fillText(`[${WARNING_TIER_LABEL[warning.tier]}] ${warning.name}`, PADDING + 22, centerY);
+
+    rowY += WARNING_ROW_HEIGHT;
+  }
+
+  return top + sectionHeight;
+}
+
+function drawForecastRow(
+  ctx: SKRSContext2D,
+  period: PrefectureForecast["periods"][number],
+  temperature: number | undefined,
+  top: number,
+  striped: boolean,
+): void {
+  if (striped) {
+    ctx.fillStyle = "rgba(144, 202, 249, 0.12)";
+    ctx.fillRect(0, top, CARD_WIDTH, ROW_HEIGHT);
+  }
+
+  const centerY = top + ROW_HEIGHT / 2;
+
+  ctx.fillStyle = "#263238";
+  ctx.font = font(20, true);
+  ctx.textAlign = "left";
+  ctx.fillText(period.periodLabel, PADDING, centerY - 4);
+
+  drawWeatherIcon(ctx, period.weatherCategory, PADDING + 130, centerY, 1.1);
+
+  ctx.fillStyle = "#37474f";
+  ctx.font = font(20);
+  ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY - 4);
+
+  if (period.pop != null) {
+    ctx.fillStyle = "#0288d1";
+    ctx.font = font(16);
+    ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 22);
+  }
+
+  if (temperature != null) {
+    ctx.fillStyle = "#d84315";
+    ctx.font = font(28, true);
+    ctx.textAlign = "right";
+    ctx.fillText(`${Math.round(temperature)}°C`, CARD_WIDTH - PADDING, centerY + 10);
+    ctx.textAlign = "left";
+  }
+}
+
+function drawFooter(ctx: SKRSContext2D, top: number): void {
+  ctx.strokeStyle = "#cfd8dc";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(PADDING, top + 8);
+  ctx.lineTo(CARD_WIDTH - PADDING, top + 8);
+  ctx.stroke();
+
+  ctx.fillStyle = "#78909c";
+  ctx.font = font(14);
+  ctx.fillText("気象・災害通知bot", PADDING, top + 32);
+}
+
+function cardHeight(periodCount: number, warningCount: number): number {
+  const warningSectionHeight =
+    warningCount > 0 ? WARNING_HEADER_HEIGHT + warningCount * WARNING_ROW_HEIGHT : 0;
+  return HEADER_HEIGHT + warningSectionHeight + periodCount * ROW_HEIGHT + FOOTER_HEIGHT + PADDING;
+}
+
 export function renderForecastImage(
   prefectureName: string,
   forecast: PrefectureForecast,
   warnings: WarningCodeInfo[] = [],
 ): Buffer {
   const { periods, temperatures, officeName } = forecast;
-  const temperatureByTime = new Map(temperatures.map((point) => [point.time.getTime(), point.temperature]));
-  const warningSectionHeight =
-    warnings.length > 0 ? WARNING_HEADER_HEIGHT + warnings.length * WARNING_ROW_HEIGHT : 0;
-  const height =
-    HEADER_HEIGHT + warningSectionHeight + periods.length * ROW_HEIGHT + FOOTER_HEIGHT + PADDING;
+  const temperatureByTime = new Map(
+    temperatures.map((point) => [point.time.getTime(), point.temperature]),
+  );
+
+  const height = cardHeight(periods.length, warnings.length);
   const canvas = createCanvas(CARD_WIDTH, height);
   const ctx = canvas.getContext("2d");
   ctx.textBaseline = "alphabetic";
 
-  // 背景
-  const bg = ctx.createLinearGradient(0, 0, 0, height);
-  bg.addColorStop(0, "#e3f2fd");
-  bg.addColorStop(1, "#ffffff");
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, CARD_WIDTH, height);
+  drawBackground(ctx, height);
+  drawHeader(ctx, prefectureName, officeName);
 
-  // ヘッダー
-  const headerGradient = ctx.createLinearGradient(0, 0, CARD_WIDTH, HEADER_HEIGHT);
-  headerGradient.addColorStop(0, "#42a5f5");
-  headerGradient.addColorStop(1, "#478ed1");
-  ctx.fillStyle = headerGradient;
-  ctx.fillRect(0, 0, CARD_WIDTH, HEADER_HEIGHT);
+  let rowY = drawWarningSection(ctx, warnings, HEADER_HEIGHT);
 
-  ctx.fillStyle = "#ffffff";
-  ctx.font = `bold 34px "${FONT_FAMILY}"`;
-  ctx.fillText(`${prefectureName}の天気予報`, PADDING, 56);
-
-  const now = new Date();
-  ctx.font = `18px "${FONT_FAMILY}"`;
-  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-  ctx.fillText(
-    `情報提供: 気象庁（${officeName}） ・ 取得時刻 ${formatJstHm(now)}`,
-    PADDING,
-    88,
-  );
-
-  // 警報・注意報
-  let rowY = HEADER_HEIGHT;
-  if (warnings.length > 0) {
-    ctx.fillStyle = "#fff3e0";
-    ctx.fillRect(0, rowY, CARD_WIDTH, warningSectionHeight);
-
-    ctx.fillStyle = "#e53935";
-    ctx.font = `bold 18px "${FONT_FAMILY}"`;
-    ctx.textAlign = "left";
-    ctx.fillText("発表中の警報・注意報", PADDING, rowY + 27);
-
-    let warningY = rowY + WARNING_HEADER_HEIGHT;
-    for (const warning of warnings) {
-      const centerY = warningY + WARNING_ROW_HEIGHT / 2;
-      const color = WARNING_TIER_COLOR[warning.tier];
-
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.arc(PADDING + 6, centerY - 5, 6, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.font = `bold 17px "${FONT_FAMILY}"`;
-      ctx.fillText(`[${WARNING_TIER_LABEL[warning.tier]}] ${warning.name}`, PADDING + 22, centerY);
-
-      warningY += WARNING_ROW_HEIGHT;
-    }
-
-    rowY += warningSectionHeight;
-  }
-
-  // 時間帯別リスト
   periods.forEach((period, index) => {
-    if (index % 2 === 1) {
-      ctx.fillStyle = "rgba(144, 202, 249, 0.12)";
-      ctx.fillRect(0, rowY, CARD_WIDTH, ROW_HEIGHT);
-    }
-
-    const centerY = rowY + ROW_HEIGHT / 2;
-
-    ctx.fillStyle = "#263238";
-    ctx.font = `bold 20px "${FONT_FAMILY}"`;
-    ctx.textAlign = "left";
-    ctx.fillText(period.periodLabel, PADDING, centerY - 4);
-
-    drawWeatherIcon(ctx, period.weatherCategory, PADDING + 130, centerY, 1.1);
-
-    ctx.fillStyle = "#37474f";
-    ctx.font = `20px "${FONT_FAMILY}"`;
-    ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY - 4);
-
-    if (period.pop != null) {
-      ctx.fillStyle = "#0288d1";
-      ctx.font = `16px "${FONT_FAMILY}"`;
-      ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 22);
-    }
-
-    const temperature = temperatureByTime.get(period.time.getTime());
-    if (temperature != null) {
-      ctx.fillStyle = "#d84315";
-      ctx.font = `bold 28px "${FONT_FAMILY}"`;
-      ctx.textAlign = "right";
-      ctx.fillText(`${Math.round(temperature)}°C`, CARD_WIDTH - PADDING, centerY + 10);
-      ctx.textAlign = "left";
-    }
-
+    drawForecastRow(ctx, period, temperatureByTime.get(period.time.getTime()), rowY, index % 2 === 1);
     rowY += ROW_HEIGHT;
   });
 
-  // フッター区切り線
-  ctx.strokeStyle = "#cfd8dc";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(PADDING, rowY + 8);
-  ctx.lineTo(CARD_WIDTH - PADDING, rowY + 8);
-  ctx.stroke();
-
-  ctx.fillStyle = "#78909c";
-  ctx.font = `14px "${FONT_FAMILY}"`;
-  ctx.fillText("気象・災害通知bot", PADDING, rowY + 32);
+  drawFooter(ctx, rowY);
 
   return canvas.toBuffer("image/png");
 }

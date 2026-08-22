@@ -1,13 +1,16 @@
-import fs from "node:fs";
-import path from "node:path";
-import { Client, EmbedBuilder, TextChannel } from "discord.js";
+import { EmbedBuilder } from "discord.js";
+import type { Client } from "discord.js";
 import { getCachedOfficeRegionMap, type OfficeRegionInfo } from "./jmaAreaMaster";
 import { describeWarningCode, shouldNotify, type WarningCodeInfo } from "../data/warningCodes";
+import { isShuttingDown, scheduleInterval, scheduleTimeout, shutdownSignal } from "../lifecycle";
 import { getChannelId, getRegionRoleId } from "./settings";
-import type { RegionName } from "../data/prefectures";
+import { fetchNotificationChannel } from "../utils/discord";
+import { fetchJson } from "../utils/http";
+import { dataFilePath, readJsonFile, writeJsonFile } from "../utils/jsonStore";
 import { logger } from "../utils/logger";
+import { MINUTE_MS, SECOND_MS, sleep } from "../utils/time";
 
-const WARNING_JSON_URL = (officeCode: string) =>
+const warningJsonUrl = (officeCode: string): string =>
   `https://www.jma.go.jp/bosai/warning/data/warning/${officeCode}.json`;
 
 // この文字列が status に入っている場合は「発表されていない／解除済み」とみなす。
@@ -16,8 +19,12 @@ const WARNING_JSON_URL = (officeCode: string) =>
 // それ以外の値はすべて「発表中」として扱う。
 const INACTIVE_STATUSES = new Set(["発表警報・注意報はなし", "解除", ""]);
 
-const STATE_FILE = path.resolve(process.cwd(), "data", "state.json");
+const STATE_FILE = dataFilePath("state.json");
+const STATE_DESCRIPTION = "警報状態ファイル(data/state.json)";
+/** 気象庁サーバへの短時間集中アクセスを避けるためのリクエスト間隔。 */
 const REQUEST_INTERVAL_MS = 300;
+/** エリアマスタの初回取得を待ってから最初のチェックを行うまでの猶予。 */
+const INITIAL_DELAY_MS = 10 * SECOND_MS;
 
 interface JmaWarningEntry {
   code: string;
@@ -42,38 +49,25 @@ type ActiveCodesByArea = Record<string, string[]>;
 /** officeコード -> ActiveCodesByArea */
 type WarningState = Record<string, ActiveCodesByArea>;
 
-function loadState(): WarningState {
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      return JSON.parse(fs.readFileSync(STATE_FILE, "utf-8")) as WarningState;
+const state: WarningState = readJsonFile<WarningState>(STATE_FILE, STATE_DESCRIPTION) ?? {};
+
+function fetchOfficeWarnings(officeCode: string): Promise<JmaWarningResponse> {
+  return fetchJson<JmaWarningResponse>(warningJsonUrl(officeCode), { signal: shutdownSignal });
+}
+
+/** レスポンスに含まれる全エリアの警報エントリを平坦化して列挙する。 */
+function* iterateAreas(
+  data: JmaWarningResponse,
+): Generator<{ areaCode: string; warnings: JmaWarningEntry[] }> {
+  for (const areaType of data.areaTypes ?? []) {
+    for (const area of areaType.areas ?? []) {
+      yield { areaCode: area.code, warnings: area.warnings ?? [] };
     }
-  } catch (error) {
-    logger.warn("警報状態ファイルの読み込みに失敗しました。初期状態から開始します。", error);
-  }
-  return {};
-}
-
-function saveState(state: WarningState): void {
-  try {
-    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state), "utf-8");
-  } catch (error) {
-    logger.warn("警報状態ファイルの保存に失敗しました。", error);
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-let state: WarningState = loadState();
-
-async function fetchOfficeWarnings(officeCode: string): Promise<JmaWarningResponse> {
-  const response = await fetch(WARNING_JSON_URL(officeCode));
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-  return (await response.json()) as JmaWarningResponse;
+function isActive(warning: JmaWarningEntry): boolean {
+  return Boolean(warning.code) && !INACTIVE_STATUSES.has(warning.status);
 }
 
 const WARNING_TIER_ORDER: Record<WarningCodeInfo["tier"], number> = {
@@ -90,13 +84,11 @@ export async function fetchActiveWarnings(officeCode: string): Promise<WarningCo
   const data = await fetchOfficeWarnings(officeCode);
 
   const activeByCode = new Map<string, WarningCodeInfo>();
-  for (const areaType of data.areaTypes ?? []) {
-    for (const area of areaType.areas ?? []) {
-      for (const warning of area.warnings ?? []) {
-        if (!warning.code || INACTIVE_STATUSES.has(warning.status)) continue;
-        if (!activeByCode.has(warning.code)) {
-          activeByCode.set(warning.code, describeWarningCode(warning.code));
-        }
+  for (const { warnings } of iterateAreas(data)) {
+    for (const warning of warnings) {
+      if (!isActive(warning)) continue;
+      if (!activeByCode.has(warning.code)) {
+        activeByCode.set(warning.code, describeWarningCode(warning.code));
       }
     }
   }
@@ -112,19 +104,15 @@ async function announceNewWarnings(
   info: OfficeRegionInfo,
   newCodes: string[],
 ): Promise<void> {
-  const channel = await client.channels.fetch(channelId);
-  if (!channel || !(channel instanceof TextChannel)) {
-    logger.error(`警報通知チャンネル(${channelId})が見つからないか、テキストチャンネルではありません。`);
-    return;
-  }
+  const channel = await fetchNotificationChannel(client, channelId);
+  if (!channel) return;
 
-  const roleId = getRegionRoleId(info.region as RegionName);
-  const mention = roleId ? `<@&${roleId}> ` : "";
-
+  const roleId = getRegionRoleId(info.region);
   const lines = newCodes.map((code) => {
-    const w = describeWarningCode(code);
-    const emoji = w.tier === "special" ? "🟣" : w.tier === "warning" ? "🔴" : "🟡";
-    return `${emoji} **${w.name}**`;
+    const warning = describeWarningCode(code);
+    const emoji =
+      warning.tier === "special" ? "🟣" : warning.tier === "warning" ? "🔴" : "🟡";
+    return `${emoji} **${warning.name}**`;
   });
 
   const embed = new EmbedBuilder()
@@ -135,7 +123,7 @@ async function announceNewWarnings(
     .setTimestamp(new Date());
 
   await channel.send({
-    content: mention || undefined,
+    content: roleId ? `<@&${roleId}> ` : undefined,
     embeds: [embed],
     allowedMentions: { roles: roleId ? [roleId] : [] },
   });
@@ -143,35 +131,45 @@ async function announceNewWarnings(
   logger.info(`警報を通知しました: ${info.prefecture} (${info.region}) - ${newCodes.join(", ")}`);
 }
 
+/**
+ * 1予報区分の発表状況を取得し、前回から新たに発表された警報だけを通知する。
+ * 発表状況に変化があった場合は true を返す（呼び出し側で状態ファイルの保存要否を判断する）。
+ */
 async function checkOffice(
   client: Client,
   channelId: string | undefined,
   officeCode: string,
   info: OfficeRegionInfo,
-): Promise<void> {
+): Promise<boolean> {
   const data = await fetchOfficeWarnings(officeCode);
 
   const previousForOffice = state[officeCode] ?? {};
   const nextForOffice: ActiveCodesByArea = {};
   const newlyIssued = new Set<string>();
+  let changed = false;
 
-  for (const areaType of data.areaTypes ?? []) {
-    for (const area of areaType.areas ?? []) {
-      const activeCodes = (area.warnings ?? [])
-        .filter((w) => !INACTIVE_STATUSES.has(w.status))
-        .map((w) => w.code)
-        .filter((code) => shouldNotify(code));
+  for (const { areaCode, warnings } of iterateAreas(data)) {
+    const activeCodes = warnings
+      .filter(isActive)
+      .map((warning) => warning.code)
+      .filter(shouldNotify);
 
-      nextForOffice[area.code] = activeCodes;
+    nextForOffice[areaCode] = activeCodes;
 
-      const previousCodes = new Set(previousForOffice[area.code] ?? []);
-      for (const code of activeCodes) {
-        if (!previousCodes.has(code)) {
-          newlyIssued.add(code);
-        }
+    const previousCodes = previousForOffice[areaCode] ?? [];
+    if (activeCodes.length !== previousCodes.length) changed = true;
+
+    const previousCodeSet = new Set(previousCodes);
+    for (const code of activeCodes) {
+      if (!previousCodeSet.has(code)) {
+        newlyIssued.add(code);
+        changed = true;
       }
     }
   }
+
+  // 予報区の構成変更などでエリアそのものが増減した場合も保存対象とする。
+  if (Object.keys(nextForOffice).length !== Object.keys(previousForOffice).length) changed = true;
 
   state[officeCode] = nextForOffice;
 
@@ -184,6 +182,8 @@ async function checkOffice(
       );
     }
   }
+
+  return changed;
 }
 
 async function pollAll(client: Client): Promise<void> {
@@ -194,28 +194,43 @@ async function pollAll(client: Client): Promise<void> {
   }
 
   const channelId = getChannelId("warning");
+  let changed = false;
 
   for (const [officeCode, info] of officeMap) {
+    if (isShuttingDown()) break;
+
     try {
-      await checkOffice(client, channelId, officeCode, info);
+      changed = (await checkOffice(client, channelId, officeCode, info)) || changed;
     } catch (error) {
+      if (isShuttingDown()) break;
       logger.error(`警報情報の取得に失敗しました (officeCode=${officeCode})`, error);
     }
-    // 気象庁サーバへの短時間集中アクセスを避けるため、リクエスト間隔を空ける。
-    await sleep(REQUEST_INTERVAL_MS);
+
+    // 終了処理が始まった場合は待機を打ち切り、残りの予報区の巡回も止める。
+    if (!(await sleep(REQUEST_INTERVAL_MS, shutdownSignal))) break;
   }
 
-  saveState(state);
+  // 発表状況に変化が無いときは全予報区分を書き戻す必要がない。
+  if (changed) {
+    writeJsonFile(STATE_FILE, state, STATE_DESCRIPTION, false);
+  }
 }
 
 export function startJmaWarningWatcher(client: Client, intervalMinutes: number): void {
+  let running = false;
+
   const run = (): void => {
-    pollAll(client).catch((error) =>
-      logger.error("警報チェックの実行中にエラーが発生しました。", error),
-    );
+    // 予報区の巡回には数十秒かかるため、前回の巡回が終わる前に次を始めない。
+    if (running || isShuttingDown()) return;
+    running = true;
+
+    pollAll(client)
+      .catch((error) => logger.error("警報チェックの実行中にエラーが発生しました。", error))
+      .finally(() => {
+        running = false;
+      });
   };
 
-  // エリアマスタの初回取得を少し待ってから最初のチェックを行う。
-  setTimeout(run, 10_000);
-  setInterval(run, intervalMinutes * 60_000);
+  scheduleTimeout(run, INITIAL_DELAY_MS);
+  scheduleInterval(run, intervalMinutes * MINUTE_MS);
 }

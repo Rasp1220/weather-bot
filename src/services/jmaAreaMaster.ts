@@ -1,5 +1,8 @@
-import { logger } from "../utils/logger";
+import { scheduleInterval, shutdownSignal } from "../lifecycle";
 import { PREFECTURES, type RegionName } from "../data/prefectures";
+import { fetchJson } from "../utils/http";
+import { logger } from "../utils/logger";
+import { DAY_MS } from "../utils/time";
 
 /**
  * 気象庁の警報・注意報API（{code}.json）で使われる予報区コードは、都道府県と
@@ -10,7 +13,7 @@ import { PREFECTURES, type RegionName } from "../data/prefectures";
  */
 
 const AREA_MASTER_URL = "https://www.jma.go.jp/bosai/common/const/area.json";
-const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const REFRESH_INTERVAL_MS = DAY_MS;
 
 interface JmaOfficeEntry {
   name: string;
@@ -42,13 +45,13 @@ const SUBAREA_TO_PREFECTURE: Array<{ keywords: string[]; prefecture: string }> =
   { keywords: ["奄美"], prefecture: "鹿児島県" },
 ];
 
-function resolvePrefectureName(officeName: string): string | undefined {
+function resolvePrefecture(officeName: string): (typeof PREFECTURES)[number] | undefined {
   const exact = PREFECTURES.find((p) => p.name === officeName);
-  if (exact) return exact.name;
+  if (exact) return exact;
 
   for (const rule of SUBAREA_TO_PREFECTURE) {
     if (rule.keywords.some((keyword) => officeName.includes(keyword))) {
-      return rule.prefecture;
+      return PREFECTURES.find((p) => p.name === rule.prefecture);
     }
   }
   return undefined;
@@ -57,23 +60,22 @@ function resolvePrefectureName(officeName: string): string | undefined {
 let cachedMap: Map<string, OfficeRegionInfo> | null = null;
 
 export async function loadJmaOfficeRegionMap(): Promise<Map<string, OfficeRegionInfo>> {
-  const response = await fetch(AREA_MASTER_URL);
-  if (!response.ok) {
-    throw new Error(`気象庁エリアマスタの取得に失敗しました: HTTP ${response.status}`);
-  }
+  const data = await fetchJson<JmaAreaMaster>(AREA_MASTER_URL, { signal: shutdownSignal });
 
-  const data = (await response.json()) as JmaAreaMaster;
   const map = new Map<string, OfficeRegionInfo>();
   let unmapped = 0;
 
   for (const [code, office] of Object.entries(data.offices ?? {})) {
-    const prefName = resolvePrefectureName(office.name);
-    const pref = prefName ? PREFECTURES.find((p) => p.name === prefName) : undefined;
-    if (!pref) {
+    const prefecture = resolvePrefecture(office.name);
+    if (!prefecture) {
       unmapped++;
       continue;
     }
-    map.set(code, { prefecture: pref.name, region: pref.region, officeName: office.name });
+    map.set(code, {
+      prefecture: prefecture.name,
+      region: prefecture.region,
+      officeName: office.name,
+    });
   }
 
   if (map.size === 0) {
@@ -110,10 +112,17 @@ export function getRepresentativeOfficeCode(prefectureName: string): string | un
 }
 
 export function startAreaMasterRefresh(): void {
-  loadJmaOfficeRegionMap().catch((error) =>
-    logger.error("気象庁エリアマスタの初回取得に失敗しました。警報監視が開始できません。", error),
-  );
-  setInterval(() => {
-    loadJmaOfficeRegionMap().catch((error) => logger.error("気象庁エリアマスタの再取得に失敗しました。", error));
-  }, REFRESH_INTERVAL_MS);
+  const refresh = (isInitial: boolean): void => {
+    loadJmaOfficeRegionMap().catch((error) =>
+      logger.error(
+        isInitial
+          ? "気象庁エリアマスタの初回取得に失敗しました。警報監視が開始できません。"
+          : "気象庁エリアマスタの再取得に失敗しました。",
+        error,
+      ),
+    );
+  };
+
+  refresh(true);
+  scheduleInterval(() => refresh(false), REFRESH_INTERVAL_MS);
 }

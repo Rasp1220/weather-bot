@@ -1,23 +1,27 @@
 import {
   AttachmentBuilder,
-  AutocompleteInteraction,
-  ChatInputCommandInteraction,
+  MessageFlags,
   SlashCommandBuilder,
+  type AutocompleteInteraction,
+  type ChatInputCommandInteraction,
 } from "discord.js";
 import { findPrefecture, searchPrefectures } from "../data/prefectures";
 import { getRepresentativeOfficeCode } from "../services/jmaAreaMaster";
 import {
   fetchPrefectureForecast,
   type ForecastPeriod,
-  type PopPoint,
   type PrefectureForecast,
   type TemperaturePoint,
 } from "../services/jmaForecast";
 import { fetchActiveWarnings } from "../services/jmaWarnings";
 import { renderForecastImage } from "../services/weatherImage";
+import type { WarningCodeInfo } from "../data/warningCodes";
 import { formatJstMonthDay, jstDayDiff, jstHour } from "../utils/jst";
 import { logger } from "../utils/logger";
+import { HOUR_MS } from "../utils/time";
+import { findLatestAtOrBefore } from "../utils/timeSeries";
 
+/** 画像に表示する時間別予報の数（次の正時から1時間刻み）。 */
 const HOURLY_STEPS = 6;
 
 function formatHourLabel(hour: Date, now: Date): string {
@@ -27,74 +31,76 @@ function formatHourLabel(hour: Date, now: Date): string {
   return `${formatJstMonthDay(hour)} ${jstHour(hour)}時`;
 }
 
-/** その時刻を含む予報時間帯（開始時刻が対象時刻以前で最も新しいもの）を探す。 */
-function findPeriodForHour(periods: ForecastPeriod[], hour: Date): ForecastPeriod | undefined {
-  let match: ForecastPeriod | undefined;
-  for (const period of periods) {
-    if (period.time.getTime() <= hour.getTime()) match = period;
-    else break;
-  }
-  return match ?? periods[0];
-}
+/**
+ * 時刻順に並んだ気温データを線形補間する。範囲外は端の値をそのまま使う。
+ * 呼び出しごとに並べ替えないよう、ソート済みの配列を受け取る前提。
+ */
+function interpolateTemperature(sorted: TemperaturePoint[], hour: Date): number | undefined {
+  if (sorted.length === 0) return undefined;
 
-/** その時刻を含む降水確率の時間帯（概ね6時間毎）の値を返す。 */
-function findPopForHour(pops: PopPoint[], hour: Date): number | undefined {
-  let match: PopPoint | undefined;
-  for (const point of pops) {
-    if (point.time.getTime() <= hour.getTime()) match = point;
-    else break;
-  }
-  return match?.pop;
-}
-
-/** 気温の既知の2点間を線形補間する。範囲外は端の値をそのまま使う。 */
-function interpolateTemperature(temperatures: TemperaturePoint[], hour: Date): number | undefined {
-  if (temperatures.length === 0) return undefined;
-  const sorted = [...temperatures].sort((a, b) => a.time.getTime() - b.time.getTime());
   const target = hour.getTime();
-
-  if (target <= sorted[0].time.getTime()) return sorted[0].temperature;
+  const first = sorted[0];
   const last = sorted[sorted.length - 1];
+  if (target <= first.time.getTime()) return first.temperature;
   if (target >= last.time.getTime()) return last.temperature;
 
   for (let i = 0; i < sorted.length - 1; i++) {
-    const a = sorted[i];
-    const b = sorted[i + 1];
-    if (target >= a.time.getTime() && target <= b.time.getTime()) {
-      const ratio = (target - a.time.getTime()) / (b.time.getTime() - a.time.getTime());
-      return a.temperature + (b.temperature - a.temperature) * ratio;
-    }
+    const before = sorted[i];
+    const after = sorted[i + 1];
+    if (target < before.time.getTime() || target > after.time.getTime()) continue;
+
+    const span = after.time.getTime() - before.time.getTime();
+    if (span === 0) return before.temperature;
+    const ratio = (target - before.time.getTime()) / span;
+    return before.temperature + (after.temperature - before.temperature) * ratio;
   }
   return undefined;
 }
 
-/** 次の正時を起点に、1時間刻みでHOURLY_STEPS時間分（6時間先まで）の予報を組み立てる。 */
+/** 次の正時を起点に、1時間刻みで HOURLY_STEPS 時間分の予報を組み立てる。 */
 function buildHourlyForecast(forecast: PrefectureForecast, now: Date): PrefectureForecast {
   // JST は UTC との差が正時単位なので、絶対時刻を1時間単位で切り上げれば JST の次の正時になる。
-  const startHour = new Date(Math.floor(now.getTime() / 3600_000) * 3600_000 + 3600_000);
+  const startHour = Math.floor(now.getTime() / HOUR_MS) * HOUR_MS + HOUR_MS;
+  const sortedTemperatures = [...forecast.temperatures].sort(
+    (a, b) => a.time.getTime() - b.time.getTime(),
+  );
 
   const periods: ForecastPeriod[] = [];
   const temperatures: TemperaturePoint[] = [];
 
   for (let i = 0; i < HOURLY_STEPS; i++) {
-    const hourTime = new Date(startHour.getTime() + i * 3600_000);
-    const base = findPeriodForHour(forecast.periods, hourTime);
+    const time = new Date(startHour + i * HOUR_MS);
+    // 気象庁の予報は数時間単位の時間帯で発表されるため、その時刻を含む時間帯の内容を使う。
+    const base = findLatestAtOrBefore(forecast.periods, time) ?? forecast.periods[0];
 
     periods.push({
-      time: hourTime,
-      periodLabel: formatHourLabel(hourTime, now),
+      time,
+      periodLabel: formatHourLabel(time, now),
       weatherText: base?.weatherText ?? "不明",
       weatherCategory: base?.weatherCategory ?? "cloud",
-      pop: findPopForHour(forecast.pops, hourTime),
+      pop: findLatestAtOrBefore(forecast.pops, time)?.pop,
     });
 
-    const temperature = interpolateTemperature(forecast.temperatures, hourTime);
+    const temperature = interpolateTemperature(sortedTemperatures, time);
     if (temperature != null) {
-      temperatures.push({ time: hourTime, temperature });
+      temperatures.push({ time, temperature });
     }
   }
 
   return { ...forecast, periods, temperatures };
+}
+
+/** 発表中の警報・注意報を取得する。取得できなくても予報自体は表示したいので例外は投げない。 */
+async function fetchWarningsForPrefecture(prefectureName: string): Promise<WarningCodeInfo[]> {
+  const officeCode = getRepresentativeOfficeCode(prefectureName);
+  if (!officeCode) return [];
+
+  try {
+    return await fetchActiveWarnings(officeCode);
+  } catch (error) {
+    logger.error(`警報情報の取得に失敗しました (prefecture=${prefectureName})`, error);
+    return [];
+  }
 }
 
 export const data = new SlashCommandBuilder()
@@ -109,8 +115,7 @@ export const data = new SlashCommandBuilder()
   );
 
 export async function autocomplete(interaction: AutocompleteInteraction): Promise<void> {
-  const focused = interaction.options.getFocused();
-  const matches = searchPrefectures(focused);
+  const matches = searchPrefectures(interaction.options.getFocused());
   await interaction.respond(matches.map((p) => ({ name: p.name, value: p.name })));
 }
 
@@ -121,7 +126,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (!prefecture) {
     await interaction.reply({
       content: `「${prefectureName}」という都道府県は見つかりませんでした。候補から選択してください。`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return;
   }
@@ -130,28 +135,18 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
   try {
     const forecast = await fetchPrefectureForecast(prefecture.name);
-
     if (forecast.periods.length === 0) {
       await interaction.editReply("天気予報データを取得できませんでした。時間をおいて再度お試しください。");
       return;
     }
 
     const hourlyForecast = buildHourlyForecast(forecast, new Date());
+    const warnings = await fetchWarningsForPrefecture(prefecture.name);
 
-    const officeCode = getRepresentativeOfficeCode(prefecture.name);
-    let warnings: Awaited<ReturnType<typeof fetchActiveWarnings>> = [];
-    if (officeCode) {
-      try {
-        warnings = await fetchActiveWarnings(officeCode);
-      } catch (error) {
-        logger.error(`警報情報の取得に失敗しました (prefecture=${prefecture.name})`, error);
-      }
-    }
-
-    const imageBuffer = renderForecastImage(prefecture.name, hourlyForecast, warnings);
-    const attachment = new AttachmentBuilder(imageBuffer, { name: "forecast.png" });
-
-    await interaction.editReply({ files: [attachment] });
+    const image = renderForecastImage(prefecture.name, hourlyForecast, warnings);
+    await interaction.editReply({
+      files: [new AttachmentBuilder(image, { name: "forecast.png" })],
+    });
   } catch (error) {
     logger.error(`天気予報の取得に失敗しました (prefecture=${prefecture.name})`, error);
     await interaction.editReply("天気予報の取得中にエラーが発生しました。時間をおいて再度お試しください。");

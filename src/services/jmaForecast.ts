@@ -1,7 +1,9 @@
-import { formatJstMonthDay, jstDayDiff, jstHour } from "../utils/jst";
 import { getRepresentativeOfficeCode } from "./jmaAreaMaster";
+import { fetchJson } from "../utils/http";
+import { formatJstMonthDay, jstDayDiff, jstHour } from "../utils/jst";
+import { findLatestAtOrBefore } from "../utils/timeSeries";
 
-const FORECAST_URL = (officeCode: string) =>
+const forecastUrl = (officeCode: string): string =>
   `https://www.jma.go.jp/bosai/forecast/data/forecast/${officeCode}.json`;
 
 /** 天気予報アイコン画像描画用の大分類。 */
@@ -96,30 +98,29 @@ function formatPeriodLabel(time: Date, now: Date): string {
   return `${dayLabel}${timeLabel}`;
 }
 
-/** popSeries は天気の時間帯とは別の刻み（概ね6時間毎）で発表されるため、最も近い時刻の値を採用する。 */
-function findClosestPop(
-  popSeries: JmaForecastTimeSeries | undefined,
-  target: Date,
-  maxDiffMs: number,
-): number | undefined {
-  const pops = popSeries?.areas?.[0]?.pops;
-  if (!popSeries || !pops) return undefined;
-
-  let bestIndex = -1;
-  let bestDiff = Infinity;
-  popSeries.timeDefines.forEach((iso, index) => {
-    const diff = Math.abs(new Date(iso).getTime() - target.getTime());
-    if (diff < bestDiff) {
-      bestDiff = diff;
-      bestIndex = index;
-    }
-  });
-
-  if (bestIndex === -1 || bestDiff > maxDiffMs) return undefined;
-  const value = pops[bestIndex];
+/** 「--」など数値として扱えない値を除外しつつ数値へ変換する。 */
+function parseNumeric(value: string | undefined): number | undefined {
   if (!value || value === "--") return undefined;
-  const num = Number(value);
-  return Number.isFinite(num) ? num : undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** 気象庁の時系列（timeDefines と値配列の組）を、時刻付きの配列へ変換する。 */
+function toNumericSeries<T>(
+  series: JmaForecastTimeSeries | undefined,
+  values: (area: JmaForecastArea) => string[] | undefined,
+  build: (time: Date, value: number) => T,
+): T[] {
+  const area = series?.areas?.[0];
+  if (!series || !area) return [];
+
+  const rawValues = values(area) ?? [];
+  const points: T[] = [];
+  series.timeDefines.forEach((iso, index) => {
+    const value = parseNumeric(rawValues[index]);
+    if (value != null) points.push(build(new Date(iso), value));
+  });
+  return points;
 }
 
 export async function fetchPrefectureForecast(prefectureName: string): Promise<PrefectureForecast> {
@@ -130,12 +131,8 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
     );
   }
 
-  const response = await fetch(FORECAST_URL(officeCode));
-  if (!response.ok) {
-    throw new Error(`気象庁予報APIエラー: ${response.status} ${response.statusText}`);
-  }
+  const data = await fetchJson<JmaForecastResponse>(forecastUrl(officeCode));
 
-  const data = (await response.json()) as JmaForecastResponse;
   const report = data[0];
   const weatherSeries = report?.timeSeries?.[0];
   const popSeries = report?.timeSeries?.[1];
@@ -146,6 +143,13 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
     throw new Error("気象庁予報APIのレスポンス形式が想定と異なります。");
   }
 
+  const pops = toNumericSeries(popSeries, (area) => area.pops, (time, pop) => ({ time, pop }));
+  const temperatures = toNumericSeries(
+    tempSeries,
+    (area) => area.temps,
+    (time, temperature) => ({ time, temperature }),
+  );
+
   const now = new Date();
   const periods: ForecastPeriod[] = weatherSeries.timeDefines.map((iso, index) => {
     const time = new Date(iso);
@@ -155,23 +159,9 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
       periodLabel: formatPeriodLabel(time, now),
       weatherText,
       weatherCategory: weatherCategoryFromText(weatherText),
-      pop: findClosestPop(popSeries, time, 3 * 3600_000),
+      pop: findLatestAtOrBefore(pops, time)?.pop,
     };
   });
-
-  const temperatures: TemperaturePoint[] = (tempSeries?.timeDefines ?? [])
-    .map((iso, index) => ({
-      time: new Date(iso),
-      temperature: Number(tempSeries?.areas?.[0]?.temps?.[index]),
-    }))
-    .filter((t) => Number.isFinite(t.temperature));
-
-  const pops: PopPoint[] = (popSeries?.timeDefines ?? [])
-    .map((iso, index) => {
-      const value = popSeries?.areas?.[0]?.pops?.[index];
-      return { time: new Date(iso), pop: value && value !== "--" ? Number(value) : NaN };
-    })
-    .filter((p) => Number.isFinite(p.pop));
 
   return {
     officeName: report?.publishingOffice ?? prefectureName,
