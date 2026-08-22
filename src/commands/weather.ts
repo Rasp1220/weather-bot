@@ -6,13 +6,13 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { findPrefecture, searchPrefectures } from "../data/prefectures";
-import { fetchHourlyForecast } from "../services/openMeteo";
+import { fetchPrefectureForecast } from "../services/jmaForecast";
 import { renderForecastImage } from "../services/weatherImage";
 import { logger } from "../utils/logger";
 
 export const data = new SlashCommandBuilder()
   .setName("weather")
-  .setDescription("指定した都道府県の時間別天気予報を表示します")
+  .setDescription("指定した都道府県の気象庁天気予報を表示します")
   .addStringOption((option) =>
     option
       .setName("prefecture")
@@ -42,9 +42,9 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   await interaction.deferReply();
 
   try {
-    const forecast = await fetchHourlyForecast(prefecture.latitude, prefecture.longitude);
+    const forecast = await fetchPrefectureForecast(prefecture.name);
 
-    if (forecast.length === 0) {
+    if (forecast.periods.length === 0) {
       await interaction.editReply("天気予報データを取得できませんでした。時間をおいて再度お試しください。");
       return;
     }

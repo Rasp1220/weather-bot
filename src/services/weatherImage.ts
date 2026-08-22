@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
-import type { HourlyForecastEntry } from "./openMeteo";
-import type { WeatherCategory } from "../data/weatherCodes";
+import type { PrefectureForecast, WeatherCategory } from "./jmaForecast";
 
 const FONT_PATH = path.resolve(process.cwd(), "assets/fonts/ipag.ttf");
 const FONT_FAMILY = "IPAGothic";
@@ -14,8 +13,8 @@ if (fs.existsSync(FONT_PATH)) {
 const CARD_WIDTH = 820;
 const PADDING = 32;
 const HEADER_HEIGHT = 116;
-const GRAPH_HEIGHT = 170;
-const ROW_HEIGHT = 68;
+const ROW_HEIGHT = 84;
+const TEMP_SECTION_HEIGHT = 92;
 const FOOTER_HEIGHT = 46;
 
 function roundRect(
@@ -149,12 +148,14 @@ function drawWeatherIcon(
   }
 }
 
-function formatHour(date: Date): string {
-  return `${date.getHours().toString().padStart(2, "0")}時`;
+function formatDateTime(date: Date): string {
+  return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, "0")}時`;
 }
 
-export function renderForecastImage(prefectureName: string, entries: HourlyForecastEntry[]): Buffer {
-  const height = HEADER_HEIGHT + GRAPH_HEIGHT + entries.length * ROW_HEIGHT + FOOTER_HEIGHT + PADDING;
+export function renderForecastImage(prefectureName: string, forecast: PrefectureForecast): Buffer {
+  const { periods, temperatures, officeName } = forecast;
+  const tempSectionHeight = temperatures.length > 0 ? TEMP_SECTION_HEIGHT : 0;
+  const height = HEADER_HEIGHT + periods.length * ROW_HEIGHT + tempSectionHeight + FOOTER_HEIGHT + PADDING;
   const canvas = createCanvas(CARD_WIDTH, height);
   const ctx = canvas.getContext("2d");
   ctx.textBaseline = "alphabetic";
@@ -181,7 +182,7 @@ export function renderForecastImage(prefectureName: string, entries: HourlyForec
   ctx.font = `18px "${FONT_FAMILY}"`;
   ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
   ctx.fillText(
-    `情報提供: Open-Meteo ・ 取得時刻 ${now.getHours().toString().padStart(2, "0")}:${now
+    `情報提供: 気象庁（${officeName}） ・ 取得時刻 ${now.getHours().toString().padStart(2, "0")}:${now
       .getMinutes()
       .toString()
       .padStart(2, "0")}`,
@@ -189,57 +190,9 @@ export function renderForecastImage(prefectureName: string, entries: HourlyForec
     88,
   );
 
-  // 気温グラフ
-  const graphTop = HEADER_HEIGHT + 34;
-  const graphBottom = HEADER_HEIGHT + GRAPH_HEIGHT - 30;
-  const graphLeft = PADDING + 10;
-  const graphRight = CARD_WIDTH - PADDING - 10;
-  const temps = entries.map((e) => e.temperature);
-  const minTemp = Math.min(...temps);
-  const maxTemp = Math.max(...temps);
-  const tempSpan = Math.max(maxTemp - minTemp, 1);
-
-  const pointX = (index: number): number =>
-    entries.length === 1
-      ? (graphLeft + graphRight) / 2
-      : graphLeft + ((graphRight - graphLeft) * index) / (entries.length - 1);
-  const pointY = (temp: number): number =>
-    graphBottom - ((temp - minTemp) / tempSpan) * (graphBottom - graphTop);
-
-  ctx.strokeStyle = "#ff7043";
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  entries.forEach((entry, index) => {
-    const x = pointX(index);
-    const y = pointY(entry.temperature);
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  entries.forEach((entry, index) => {
-    const x = pointX(index);
-    const y = pointY(entry.temperature);
-
-    ctx.fillStyle = "#ff7043";
-    ctx.beginPath();
-    ctx.arc(x, y, 4, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = "#37474f";
-    ctx.font = `bold 15px "${FONT_FAMILY}"`;
-    ctx.textAlign = "center";
-    ctx.fillText(`${Math.round(entry.temperature)}℃`, x, y - 12);
-
-    ctx.fillStyle = "#607d8b";
-    ctx.font = `13px "${FONT_FAMILY}"`;
-    ctx.fillText(formatHour(entry.time), x, graphBottom + 22);
-  });
-  ctx.textAlign = "left";
-
-  // 時間別リスト
-  let rowY = HEADER_HEIGHT + GRAPH_HEIGHT;
-  entries.forEach((entry, index) => {
+  // 時間帯別リスト
+  let rowY = HEADER_HEIGHT;
+  periods.forEach((period, index) => {
     if (index % 2 === 1) {
       ctx.fillStyle = "rgba(144, 202, 249, 0.12)";
       ctx.fillRect(0, rowY, CARD_WIDTH, ROW_HEIGHT);
@@ -248,24 +201,56 @@ export function renderForecastImage(prefectureName: string, entries: HourlyForec
     const centerY = rowY + ROW_HEIGHT / 2;
 
     ctx.fillStyle = "#263238";
-    ctx.font = `bold 18px "${FONT_FAMILY}"`;
+    ctx.font = `bold 20px "${FONT_FAMILY}"`;
     ctx.textAlign = "left";
-    ctx.fillText(formatHour(entry.time), PADDING, centerY + 6);
+    ctx.fillText(period.periodLabel, PADDING, centerY - 4);
 
-    drawWeatherIcon(ctx, entry.weatherCategory, PADDING + 110, centerY, 1.1);
+    drawWeatherIcon(ctx, period.weatherCategory, PADDING + 130, centerY, 1.1);
 
     ctx.fillStyle = "#37474f";
-    ctx.font = `18px "${FONT_FAMILY}"`;
-    ctx.fillText(entry.weatherLabel, PADDING + 160, centerY + 6);
+    ctx.font = `20px "${FONT_FAMILY}"`;
+    ctx.fillText(period.weatherText, PADDING + 180, centerY - 4);
 
-    ctx.fillStyle = "#d84315";
-    ctx.font = `bold 22px "${FONT_FAMILY}"`;
-    ctx.textAlign = "right";
-    ctx.fillText(`${Math.round(entry.temperature)}℃`, CARD_WIDTH - PADDING, centerY + 7);
-    ctx.textAlign = "left";
+    if (period.pop != null) {
+      ctx.fillStyle = "#0288d1";
+      ctx.font = `16px "${FONT_FAMILY}"`;
+      ctx.fillText(`降水確率 ${period.pop}%`, PADDING + 180, centerY + 22);
+    }
 
     rowY += ROW_HEIGHT;
   });
+
+  // 気温セクション
+  if (temperatures.length > 0) {
+    ctx.strokeStyle = "#cfd8dc";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(PADDING, rowY);
+    ctx.lineTo(CARD_WIDTH - PADDING, rowY);
+    ctx.stroke();
+
+    ctx.fillStyle = "#546e7a";
+    ctx.font = `bold 16px "${FONT_FAMILY}"`;
+    ctx.textAlign = "left";
+    ctx.fillText("予想気温", PADDING, rowY + 26);
+
+    const chipWidth = (CARD_WIDTH - PADDING * 2) / temperatures.length;
+    temperatures.forEach((point, index) => {
+      const chipCenterX = PADDING + chipWidth * index + chipWidth / 2;
+
+      ctx.fillStyle = "#78909c";
+      ctx.font = `14px "${FONT_FAMILY}"`;
+      ctx.textAlign = "center";
+      ctx.fillText(formatDateTime(point.time), chipCenterX, rowY + 52);
+
+      ctx.fillStyle = "#d84315";
+      ctx.font = `bold 26px "${FONT_FAMILY}"`;
+      ctx.fillText(`${Math.round(point.temperature)}℃`, chipCenterX, rowY + 80);
+    });
+    ctx.textAlign = "left";
+
+    rowY += tempSectionHeight;
+  }
 
   // フッター区切り線
   ctx.strokeStyle = "#cfd8dc";
