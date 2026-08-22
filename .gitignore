@@ -3,4 +3,5 @@ dist/
 .env
 *.log
 data/state.json
+data/settings.json
 .DS_Store

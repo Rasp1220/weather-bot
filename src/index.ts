@@ -5,6 +5,7 @@ import { startEarthquakeWatcher } from "./services/earthquake";
 import { startAreaMasterRefresh } from "./services/jmaAreaMaster";
 import { startJmaWarningWatcher } from "./services/jmaWarnings";
 import * as weatherCommand from "./commands/weather";
+import * as configCommand from "./commands/config";
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
@@ -13,9 +14,9 @@ const client = new Client({
 client.once(Events.ClientReady, (readyClient) => {
   logger.info(`Discord Bot にログインしました: ${readyClient.user.tag}`);
 
-  startEarthquakeWatcher(client, config.channels.earthquake, config.earthquakeMinScale);
+  startEarthquakeWatcher(client, config.earthquakeMinScale);
   startAreaMasterRefresh();
-  startJmaWarningWatcher(client, config.channels.warning, config.jmaPollingIntervalMinutes);
+  startJmaWarningWatcher(client, config.jmaPollingIntervalMinutes);
 });
 
 client.on(Events.InteractionCreate, async (interaction: Interaction) => {
@@ -26,6 +27,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
     if (interaction.isAutocomplete() && interaction.commandName === "weather") {
       await weatherCommand.autocomplete(interaction);
+      return;
+    }
+    if (interaction.isChatInputCommand() && interaction.commandName === "config") {
+      await configCommand.execute(interaction);
       return;
     }
   } catch (error) {

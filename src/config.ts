@@ -39,8 +39,9 @@ export const config = {
     guildId: process.env.DISCORD_GUILD_ID || undefined,
   },
   channels: {
-    earthquake: requireEnv("EARTHQUAKE_CHANNEL_ID"),
-    warning: requireEnv("WARNING_CHANNEL_ID"),
+    // 未設定でも起動可能。/config channel set コマンドで実行時に設定できる。
+    earthquake: process.env.EARTHQUAKE_CHANNEL_ID || undefined,
+    warning: process.env.WARNING_CHANNEL_ID || undefined,
   },
   regionRoleIds: fileConfig.regions,
   jmaPollingIntervalMinutes: Number(

@@ -1,10 +1,11 @@
 import { REST, Routes } from "discord.js";
 import { config } from "../config";
 import { data as weatherCommand } from "./weather";
+import { data as configCommand } from "./config";
 import { logger } from "../utils/logger";
 
 async function main(): Promise<void> {
-  const commands = [weatherCommand.toJSON()];
+  const commands = [weatherCommand.toJSON(), configCommand.toJSON()];
   const rest = new REST().setToken(config.discord.token);
 
   const route = config.discord.guildId
