@@ -22,10 +22,17 @@ export interface TemperaturePoint {
   temperature: number;
 }
 
+export interface PopPoint {
+  time: Date;
+  pop: number;
+}
+
 export interface PrefectureForecast {
   officeName: string;
   periods: ForecastPeriod[];
   temperatures: TemperaturePoint[];
+  /** 降水確率の生データ（概ね6時間毎）。時間単位の予報を組み立てる際に使用する。 */
+  pops: PopPoint[];
 }
 
 interface JmaForecastArea {
@@ -144,9 +151,17 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
     }))
     .filter((t) => Number.isFinite(t.temperature));
 
+  const pops: PopPoint[] = (popSeries?.timeDefines ?? [])
+    .map((iso, index) => {
+      const value = popSeries?.areas?.[0]?.pops?.[index];
+      return { time: new Date(iso), pop: value && value !== "--" ? Number(value) : NaN };
+    })
+    .filter((p) => Number.isFinite(p.pop));
+
   return {
     officeName: report?.publishingOffice ?? prefectureName,
     periods,
     temperatures,
+    pops,
   };
 }
