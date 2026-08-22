@@ -70,13 +70,16 @@ export const data = new SlashCommandBuilder()
               .addChoices(...REGION_NAMES.map((name) => ({ name, value: name }))),
           )
           .addRoleOption((option) =>
-            option.setName("role").setDescription("警報発表時にメンションするロール").setRequired(true),
+            option
+              .setName("role")
+              .setDescription("その地方の災害情報でメンションするロール")
+              .setRequired(true),
           ),
       )
       .addSubcommand((sub) =>
         sub
           .setName("unset")
-          .setDescription("地方区分のロール設定を解除します（以後メンションなしで通知）")
+          .setDescription("地方区分のロール設定を解除します（以後 @here で通知）")
           .addStringOption((option) =>
             option
               .setName("region")
@@ -114,7 +117,7 @@ async function setRegionRole(interaction: ChatInputCommandInteraction): Promise<
   setRegionRoleId(region, role.id);
   await replyPrivately(
     interaction,
-    `✅ ${region}地方の警報通知ロールを <@&${role.id}> に設定しました。`,
+    `✅ ${region}地方の災害通知ロールを <@&${role.id}> に設定しました。`,
   );
 }
 
@@ -124,7 +127,7 @@ async function unsetRegionRole(interaction: ChatInputCommandInteraction): Promis
   setRegionRoleId(region, null);
   await replyPrivately(
     interaction,
-    `✅ ${region}地方のロール設定を解除しました（以後メンションなしで通知されます）。`,
+    `✅ ${region}地方のロール設定を解除しました（以後 @here で通知されます）。`,
   );
 }
 
@@ -139,7 +142,7 @@ async function showSettings(interaction: ChatInputCommandInteraction): Promise<v
 
   const roleLines = REGION_NAMES.map((region) => {
     const roleId = regionRoleIds[region];
-    return `${region}: ${roleId ? `<@&${roleId}>` : "未設定（メンションなし）"}`;
+    return `${region}: ${roleId ? `<@&${roleId}>` : "未設定（@here で通知）"}`;
   });
 
   const embed = new EmbedBuilder()

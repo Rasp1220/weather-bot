@@ -3,7 +3,8 @@ import type { Client } from "discord.js";
 import { getCachedOfficeRegionMap, type OfficeRegionInfo } from "./jmaAreaMaster";
 import { describeWarningCode, shouldNotify, type WarningCodeInfo } from "../data/warningCodes";
 import { isShuttingDown, scheduleInterval, scheduleTimeout, shutdownSignal } from "../lifecycle";
-import { getChannelId, getRegionRoleId } from "./settings";
+import { buildRegionMention } from "./mentions";
+import { getChannelId } from "./settings";
 import { fetchNotificationChannel } from "../utils/discord";
 import { fetchJson } from "../utils/http";
 import { dataFilePath, readJsonFile, writeJsonFile } from "../utils/jsonStore";
@@ -107,7 +108,6 @@ async function announceNewWarnings(
   const channel = await fetchNotificationChannel(client, channelId);
   if (!channel) return;
 
-  const roleId = getRegionRoleId(info.region);
   const lines = newCodes.map((code) => {
     const warning = describeWarningCode(code);
     const emoji =
@@ -122,13 +122,16 @@ async function announceNewWarnings(
     .setFooter({ text: "情報提供: 気象庁" })
     .setTimestamp(new Date());
 
+  const mention = buildRegionMention([info.region]);
   await channel.send({
-    content: roleId ? `<@&${roleId}> ` : undefined,
+    content: mention.content,
     embeds: [embed],
-    allowedMentions: { roles: roleId ? [roleId] : [] },
+    allowedMentions: mention.allowedMentions,
   });
 
-  logger.info(`警報を通知しました: ${info.prefecture} (${info.region}) - ${newCodes.join(", ")}`);
+  logger.info(
+    `警報を通知しました: ${info.prefecture} (${info.region}) - ${newCodes.join(", ")} / メンション: ${mention.description}`,
+  );
 }
 
 /**
