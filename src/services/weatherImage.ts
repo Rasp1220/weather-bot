@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
 import type { WarningCodeInfo } from "../data/warningCodes";
-import type { PrefectureForecast, WeatherCategory } from "./jmaForecast";
+import { shortWeatherLabel, type PrefectureForecast, type WeatherCategory } from "./jmaForecast";
 
 const FONT_FAMILY = "Noto Sans JP";
 const REGULAR_FONT_PATH = path.resolve(process.cwd(), "assets/fonts/NotoSansJP-Regular.ttf");
@@ -22,6 +22,7 @@ const ROW_HEIGHT = 84;
 const FOOTER_HEIGHT = 46;
 const WARNING_HEADER_HEIGHT = 40;
 const WARNING_ROW_HEIGHT = 30;
+const WEATHER_TEXT_X = PADDING + 180;
 
 const WARNING_TIER_COLOR: Record<WarningCodeInfo["tier"], string> = {
   special: "#8e24aa",
@@ -259,12 +260,12 @@ export function renderForecastImage(
 
     ctx.fillStyle = "#37474f";
     ctx.font = `20px "${FONT_FAMILY}"`;
-    ctx.fillText(period.weatherText, PADDING + 180, centerY - 4);
+    ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY - 4);
 
     if (period.pop != null) {
       ctx.fillStyle = "#0288d1";
       ctx.font = `16px "${FONT_FAMILY}"`;
-      ctx.fillText(`降水確率 ${period.pop}%`, PADDING + 180, centerY + 22);
+      ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 22);
     }
 
     const temperature = temperatureByTime.get(period.time.getTime());
