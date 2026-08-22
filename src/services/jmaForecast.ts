@@ -1,3 +1,4 @@
+import { formatJstMonthDay, jstDayDiff, jstHour } from "../utils/jst";
 import { getRepresentativeOfficeCode } from "./jmaAreaMaster";
 
 const FORECAST_URL = (officeCode: string) =>
@@ -86,17 +87,11 @@ export function shortWeatherLabel(text: string): string {
   return "不明";
 }
 
-function startOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
 function formatPeriodLabel(time: Date, now: Date): string {
-  const dayDiff = Math.round((startOfDay(time).getTime() - startOfDay(now).getTime()) / 86_400_000);
+  const dayDiff = jstDayDiff(time, now);
   const dayLabel =
-    dayDiff <= 0 ? "今日" : dayDiff === 1 ? "明日" : dayDiff === 2 ? "明後日" : `${time.getMonth() + 1}/${time.getDate()}`;
-  const hour = time.getHours();
+    dayDiff <= 0 ? "今日" : dayDiff === 1 ? "明日" : dayDiff === 2 ? "明後日" : formatJstMonthDay(time);
+  const hour = jstHour(time);
   const timeLabel = hour < 6 ? "未明" : hour < 11 ? "朝" : hour < 17 ? "昼" : "夜";
   return `${dayLabel}${timeLabel}`;
 }

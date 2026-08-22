@@ -15,21 +15,16 @@ import {
 } from "../services/jmaForecast";
 import { fetchActiveWarnings } from "../services/jmaWarnings";
 import { renderForecastImage } from "../services/weatherImage";
+import { formatJstMonthDay, jstDayDiff, jstHour } from "../utils/jst";
 import { logger } from "../utils/logger";
 
 const HOURLY_STEPS = 6;
 
-function startOfDay(date: Date): Date {
-  const d = new Date(date);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
 function formatHourLabel(hour: Date, now: Date): string {
-  const dayDiff = Math.round((startOfDay(hour).getTime() - startOfDay(now).getTime()) / 86_400_000);
-  if (dayDiff <= 0) return `${hour.getHours()}時`;
-  if (dayDiff === 1) return `明日${hour.getHours()}時`;
-  return `${hour.getMonth() + 1}/${hour.getDate()} ${hour.getHours()}時`;
+  const dayDiff = jstDayDiff(hour, now);
+  if (dayDiff <= 0) return `${jstHour(hour)}時`;
+  if (dayDiff === 1) return `明日${jstHour(hour)}時`;
+  return `${formatJstMonthDay(hour)} ${jstHour(hour)}時`;
 }
 
 /** その時刻を含む予報時間帯（開始時刻が対象時刻以前で最も新しいもの）を探す。 */
@@ -75,9 +70,8 @@ function interpolateTemperature(temperatures: TemperaturePoint[], hour: Date): n
 
 /** 次の正時を起点に、1時間刻みでHOURLY_STEPS時間分（6時間先まで）の予報を組み立てる。 */
 function buildHourlyForecast(forecast: PrefectureForecast, now: Date): PrefectureForecast {
-  const startHour = new Date(now);
-  startHour.setMinutes(0, 0, 0);
-  startHour.setHours(startHour.getHours() + 1);
+  // JST は UTC との差が正時単位なので、絶対時刻を1時間単位で切り上げれば JST の次の正時になる。
+  const startHour = new Date(Math.floor(now.getTime() / 3600_000) * 3600_000 + 3600_000);
 
   const periods: ForecastPeriod[] = [];
   const temperatures: TemperaturePoint[] = [];

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
 import type { WarningCodeInfo } from "../data/warningCodes";
+import { formatJstHm } from "../utils/jst";
 import { shortWeatherLabel, type PrefectureForecast, type WeatherCategory } from "./jmaForecast";
 
 const FONT_FAMILY = "Noto Sans JP";
@@ -204,10 +205,7 @@ export function renderForecastImage(
   ctx.font = `18px "${FONT_FAMILY}"`;
   ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
   ctx.fillText(
-    `情報提供: 気象庁（${officeName}） ・ 取得時刻 ${now.getHours().toString().padStart(2, "0")}:${now
-      .getMinutes()
-      .toString()
-      .padStart(2, "0")}`,
+    `情報提供: 気象庁（${officeName}） ・ 取得時刻 ${formatJstHm(now)}`,
     PADDING,
     88,
   );
