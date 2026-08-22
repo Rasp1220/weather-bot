@@ -19,7 +19,6 @@ const CARD_WIDTH = 820;
 const PADDING = 32;
 const HEADER_HEIGHT = 116;
 const ROW_HEIGHT = 84;
-const TEMP_SECTION_HEIGHT = 92;
 const FOOTER_HEIGHT = 46;
 const WARNING_HEADER_HEIGHT = 40;
 const WARNING_ROW_HEIGHT = 30;
@@ -167,26 +166,17 @@ function drawWeatherIcon(
   }
 }
 
-function formatDateTime(date: Date): string {
-  return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, "0")}時`;
-}
-
 export function renderForecastImage(
   prefectureName: string,
   forecast: PrefectureForecast,
   warnings: WarningCodeInfo[] = [],
 ): Buffer {
   const { periods, temperatures, officeName } = forecast;
-  const tempSectionHeight = temperatures.length > 0 ? TEMP_SECTION_HEIGHT : 0;
+  const temperatureByTime = new Map(temperatures.map((point) => [point.time.getTime(), point.temperature]));
   const warningSectionHeight =
     warnings.length > 0 ? WARNING_HEADER_HEIGHT + warnings.length * WARNING_ROW_HEIGHT : 0;
   const height =
-    HEADER_HEIGHT +
-    warningSectionHeight +
-    periods.length * ROW_HEIGHT +
-    tempSectionHeight +
-    FOOTER_HEIGHT +
-    PADDING;
+    HEADER_HEIGHT + warningSectionHeight + periods.length * ROW_HEIGHT + FOOTER_HEIGHT + PADDING;
   const canvas = createCanvas(CARD_WIDTH, height);
   const ctx = canvas.getContext("2d");
   ctx.textBaseline = "alphabetic";
@@ -277,40 +267,17 @@ export function renderForecastImage(
       ctx.fillText(`降水確率 ${period.pop}%`, PADDING + 180, centerY + 22);
     }
 
+    const temperature = temperatureByTime.get(period.time.getTime());
+    if (temperature != null) {
+      ctx.fillStyle = "#d84315";
+      ctx.font = `bold 28px "${FONT_FAMILY}"`;
+      ctx.textAlign = "right";
+      ctx.fillText(`${Math.round(temperature)}°C`, CARD_WIDTH - PADDING, centerY + 10);
+      ctx.textAlign = "left";
+    }
+
     rowY += ROW_HEIGHT;
   });
-
-  // 気温セクション
-  if (temperatures.length > 0) {
-    ctx.strokeStyle = "#cfd8dc";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(PADDING, rowY);
-    ctx.lineTo(CARD_WIDTH - PADDING, rowY);
-    ctx.stroke();
-
-    ctx.fillStyle = "#546e7a";
-    ctx.font = `bold 16px "${FONT_FAMILY}"`;
-    ctx.textAlign = "left";
-    ctx.fillText("予想気温", PADDING, rowY + 26);
-
-    const chipWidth = (CARD_WIDTH - PADDING * 2) / temperatures.length;
-    temperatures.forEach((point, index) => {
-      const chipCenterX = PADDING + chipWidth * index + chipWidth / 2;
-
-      ctx.fillStyle = "#78909c";
-      ctx.font = `14px "${FONT_FAMILY}"`;
-      ctx.textAlign = "center";
-      ctx.fillText(formatDateTime(point.time), chipCenterX, rowY + 52);
-
-      ctx.fillStyle = "#d84315";
-      ctx.font = `bold 26px "${FONT_FAMILY}"`;
-      ctx.fillText(`${Math.round(point.temperature)}°C`, chipCenterX, rowY + 80);
-    });
-    ctx.textAlign = "left";
-
-    rowY += tempSectionHeight;
-  }
 
   // フッター区切り線
   ctx.strokeStyle = "#cfd8dc";
