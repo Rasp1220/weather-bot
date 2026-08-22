@@ -324,6 +324,7 @@ function drawWarningSection(ctx: SKRSContext2D, warnings: WarningCodeInfo[], top
 function drawForecastRow(
   ctx: SKRSContext2D,
   period: PrefectureForecast["periods"][number],
+  temperature: number | undefined,
   top: number,
   striped: boolean,
 ): void {
@@ -343,17 +344,19 @@ function drawForecastRow(
 
   ctx.fillStyle = "#37474f";
   ctx.font = font(20);
-  ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY + 7);
+  ctx.fillText(shortWeatherLabel(period.weatherText), WEATHER_TEXT_X, centerY - 4);
 
   if (period.pop != null) {
-    ctx.textAlign = "right";
-    ctx.fillStyle = "#78909c";
-    ctx.font = font(15);
-    ctx.fillText("降水確率", CARD_WIDTH - PADDING - 78, centerY + 7);
-
     ctx.fillStyle = "#0288d1";
-    ctx.font = font(26, true);
-    ctx.fillText(`${period.pop}%`, CARD_WIDTH - PADDING, centerY + 9);
+    ctx.font = font(16);
+    ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 22);
+  }
+
+  if (temperature != null) {
+    ctx.fillStyle = "#d84315";
+    ctx.font = font(28, true);
+    ctx.textAlign = "right";
+    ctx.fillText(`${Math.round(temperature)}°C`, CARD_WIDTH - PADDING, centerY + 10);
     ctx.textAlign = "left";
   }
 }
@@ -398,7 +401,10 @@ export function renderForecastImage(
   forecast: PrefectureForecast,
   warnings: WarningCodeInfo[] = [],
 ): Buffer {
-  const { periods, dailyTemperatures, officeName } = forecast;
+  const { periods, dailyTemperatures, temperatures, officeName } = forecast;
+  const temperatureByTime = new Map(
+    temperatures.map((point) => [point.time.getTime(), point.temperature]),
+  );
   const temperatureDays = countTemperatureDays(dailyTemperatures, new Date());
 
   const height = cardHeight(periods.length, warnings.length, temperatureDays);
@@ -413,7 +419,7 @@ export function renderForecastImage(
   rowY = drawTemperatureSection(ctx, dailyTemperatures, rowY);
 
   periods.forEach((period, index) => {
-    drawForecastRow(ctx, period, rowY, index % 2 === 1);
+    drawForecastRow(ctx, period, temperatureByTime.get(period.time.getTime()), rowY, index % 2 === 1);
     rowY += ROW_HEIGHT;
   });
 

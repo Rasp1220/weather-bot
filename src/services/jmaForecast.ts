@@ -30,6 +30,11 @@ export interface ForecastPeriod {
   segments?: WeatherSegment[];
 }
 
+export interface TemperaturePoint {
+  time: Date;
+  temperature: number;
+}
+
 /** 日ごとの最高・最低気温。気象庁は時間別気温を発表しないため、予報値はこの粒度が上限。 */
 export interface DailyTemperature {
   /** その日を代表する時刻（JST のその日のいずれかの発表時刻）。 */
@@ -48,6 +53,8 @@ export interface PrefectureForecast {
   periods: ForecastPeriod[];
   /** 日別の最高・最低気温（今日・明日など）。 */
   dailyTemperatures: DailyTemperature[];
+  /** 気温の生データ（最低・最高の発表時刻）。時間別気温の補間に使用する。 */
+  temperatures: TemperaturePoint[];
   /** 降水確率の生データ（概ね6時間毎）。時間単位の予報を組み立てる際に使用する。 */
   pops: PopPoint[];
 }
@@ -184,6 +191,11 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
   const pops = toNumericSeries(popSeries, (area) => area.pops, (time, pop) => ({ time, pop }));
   // data[1] は週間予報。当日・翌日の気温が欠けている場合の補完に使う。
   const dailyTemperatures = buildDailyTemperatures(tempSeries, data[1]?.timeSeries?.[1]);
+  const temperatures = toNumericSeries(
+    tempSeries,
+    (area) => area.temps,
+    (time, temperature) => ({ time, temperature }),
+  );
 
   const now = new Date();
   const periods: ForecastPeriod[] = weatherSeries.timeDefines.map((iso, index) => {
@@ -203,6 +215,7 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
     officeName: report?.publishingOffice ?? prefectureName,
     periods,
     dailyTemperatures,
+    temperatures,
     pops,
   };
 }
