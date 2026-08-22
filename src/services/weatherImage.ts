@@ -23,7 +23,6 @@ const FOOTER_HEIGHT = 46;
 const WARNING_HEADER_HEIGHT = 40;
 const WARNING_ROW_HEIGHT = 30;
 const WEATHER_TEXT_X = PADDING + 180;
-const TEMPERATURE_COLUMN_WIDTH = 110;
 
 const WARNING_TIER_COLOR: Record<WarningCodeInfo["tier"], string> = {
   special: "#8e24aa",
@@ -36,16 +35,6 @@ const WARNING_TIER_LABEL: Record<WarningCodeInfo["tier"], string> = {
   warning: "警報",
   advisory: "注意報",
 };
-
-function truncateToWidth(ctx: SKRSContext2D, text: string, maxWidth: number): string {
-  if (ctx.measureText(text).width <= maxWidth) return text;
-  const ellipsis = "…";
-  let truncated = text;
-  while (truncated.length > 0 && ctx.measureText(truncated + ellipsis).width > maxWidth) {
-    truncated = truncated.slice(0, -1);
-  }
-  return `${truncated}${ellipsis}`;
-}
 
 function roundRect(
   ctx: SKRSContext2D,
@@ -269,16 +258,10 @@ export function renderForecastImage(
 
     drawWeatherIcon(ctx, period.weatherCategory, PADDING + 130, centerY, 1.1);
 
-    const weatherTextMaxWidth = CARD_WIDTH - PADDING - TEMPERATURE_COLUMN_WIDTH - WEATHER_TEXT_X;
-
-    ctx.fillStyle = "#37474f";
-    ctx.font = `20px "${FONT_FAMILY}"`;
-    ctx.fillText(truncateToWidth(ctx, period.weatherText, weatherTextMaxWidth), WEATHER_TEXT_X, centerY - 4);
-
     if (period.pop != null) {
       ctx.fillStyle = "#0288d1";
       ctx.font = `16px "${FONT_FAMILY}"`;
-      ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 22);
+      ctx.fillText(`降水確率 ${period.pop}%`, WEATHER_TEXT_X, centerY + 6);
     }
 
     const temperature = temperatureByTime.get(period.time.getTime());
