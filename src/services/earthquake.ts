@@ -78,13 +78,16 @@ function describeTsunami(status: string | undefined): string {
   }
 }
 
+let activeWs: WebSocket | null = null;
+let closedByUs = false;
+
 export function startEarthquakeWatcher(client: Client, minScale: number): void {
   let reconnectDelay = RECONNECT_BASE_DELAY_MS;
-  let closedByUs = false;
 
   const connect = (): void => {
     logger.info("P2P地震情報 WebSocket に接続します...");
     const ws = new WebSocket(P2P_QUAKE_WS_URL);
+    activeWs = ws;
 
     ws.on("open", () => {
       logger.info("P2P地震情報 WebSocket に接続しました。");
@@ -140,11 +143,9 @@ export function startEarthquakeWatcher(client: Client, minScale: number): void {
   };
 
   connect();
+}
 
-  process.once("SIGTERM", () => {
-    closedByUs = true;
-  });
-  process.once("SIGINT", () => {
-    closedByUs = true;
-  });
+export function stopEarthquakeWatcher(): void {
+  closedByUs = true;
+  activeWs?.close();
 }

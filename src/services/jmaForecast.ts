@@ -1,4 +1,5 @@
 import { getRepresentativeOfficeCode } from "./jmaAreaMaster";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout";
 
 const FORECAST_URL = (officeCode: string) =>
   `https://www.jma.go.jp/bosai/forecast/data/forecast/${officeCode}.json`;
@@ -108,7 +109,7 @@ export async function fetchPrefectureForecast(prefectureName: string): Promise<P
     );
   }
 
-  const response = await fetch(FORECAST_URL(officeCode));
+  const response = await fetchWithTimeout(FORECAST_URL(officeCode));
   if (!response.ok) {
     throw new Error(`気象庁予報APIエラー: ${response.status} ${response.statusText}`);
   }

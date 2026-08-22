@@ -1,9 +1,9 @@
 import { Client, Events, GatewayIntentBits, Interaction } from "discord.js";
 import { config } from "./config";
 import { logger } from "./utils/logger";
-import { startEarthquakeWatcher } from "./services/earthquake";
-import { startAreaMasterRefresh } from "./services/jmaAreaMaster";
-import { startJmaWarningWatcher } from "./services/jmaWarnings";
+import { startEarthquakeWatcher, stopEarthquakeWatcher } from "./services/earthquake";
+import { startAreaMasterRefresh, stopAreaMasterRefresh } from "./services/jmaAreaMaster";
+import { startJmaWarningWatcher, stopJmaWarningWatcher } from "./services/jmaWarnings";
 import * as weatherCommand from "./commands/weather";
 import * as configCommand from "./commands/config";
 
@@ -44,6 +44,27 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 process.on("unhandledRejection", (reason) => {
   logger.error("未処理の Promise rejection が発生しました。", reason);
 });
+
+let shuttingDown = false;
+
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`${signal} を受信しました。Botを終了します。`);
+
+  // WebSocket接続やタイマーが残っているとNodeプロセスが自然終了できず、
+  // systemd の再起動がタイムアウト（SIGKILL）待ちで固まってしまうため、
+  // 後始末をした上で明示的に終了させる。
+  stopEarthquakeWatcher();
+  stopJmaWarningWatcher();
+  stopAreaMasterRefresh();
+  client.destroy();
+
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));
 
 client.login(config.discord.token).catch((error) => {
   logger.error("Discord へのログインに失敗しました。DISCORD_TOKEN を確認してください。", error);

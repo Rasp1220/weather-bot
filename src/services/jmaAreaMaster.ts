@@ -1,5 +1,6 @@
 import { logger } from "../utils/logger";
 import { PREFECTURES, type RegionName } from "../data/prefectures";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout";
 
 /**
  * 気象庁の警報・注意報API（{code}.json）で使われる予報区コードは、都道府県と
@@ -57,7 +58,7 @@ function resolvePrefectureName(officeName: string): string | undefined {
 let cachedMap: Map<string, OfficeRegionInfo> | null = null;
 
 export async function loadJmaOfficeRegionMap(): Promise<Map<string, OfficeRegionInfo>> {
-  const response = await fetch(AREA_MASTER_URL);
+  const response = await fetchWithTimeout(AREA_MASTER_URL);
   if (!response.ok) {
     throw new Error(`気象庁エリアマスタの取得に失敗しました: HTTP ${response.status}`);
   }
@@ -109,11 +110,17 @@ export function getRepresentativeOfficeCode(prefectureName: string): string | un
   return fallback;
 }
 
+let refreshInterval: NodeJS.Timeout | null = null;
+
 export function startAreaMasterRefresh(): void {
   loadJmaOfficeRegionMap().catch((error) =>
     logger.error("気象庁エリアマスタの初回取得に失敗しました。警報監視が開始できません。", error),
   );
-  setInterval(() => {
+  refreshInterval = setInterval(() => {
     loadJmaOfficeRegionMap().catch((error) => logger.error("気象庁エリアマスタの再取得に失敗しました。", error));
   }, REFRESH_INTERVAL_MS);
+}
+
+export function stopAreaMasterRefresh(): void {
+  if (refreshInterval) clearInterval(refreshInterval);
 }

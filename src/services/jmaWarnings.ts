@@ -6,6 +6,7 @@ import { describeWarningCode, shouldNotify } from "../data/warningCodes";
 import { getChannelId, getRegionRoleId } from "./settings";
 import type { RegionName } from "../data/prefectures";
 import { logger } from "../utils/logger";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout";
 
 const WARNING_JSON_URL = (officeCode: string) =>
   `https://www.jma.go.jp/bosai/warning/data/warning/${officeCode}.json`;
@@ -67,7 +68,7 @@ function sleep(ms: number): Promise<void> {
 let state: WarningState = loadState();
 
 async function fetchOfficeWarnings(officeCode: string): Promise<JmaWarningResponse> {
-  const response = await fetch(WARNING_JSON_URL(officeCode));
+  const response = await fetchWithTimeout(WARNING_JSON_URL(officeCode));
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -176,6 +177,9 @@ async function pollAll(client: Client): Promise<void> {
   saveState(state);
 }
 
+let warningTimeout: NodeJS.Timeout | null = null;
+let warningInterval: NodeJS.Timeout | null = null;
+
 export function startJmaWarningWatcher(client: Client, intervalMinutes: number): void {
   const run = (): void => {
     pollAll(client).catch((error) =>
@@ -184,6 +188,11 @@ export function startJmaWarningWatcher(client: Client, intervalMinutes: number):
   };
 
   // エリアマスタの初回取得を少し待ってから最初のチェックを行う。
-  setTimeout(run, 10_000);
-  setInterval(run, intervalMinutes * 60_000);
+  warningTimeout = setTimeout(run, 10_000);
+  warningInterval = setInterval(run, intervalMinutes * 60_000);
+}
+
+export function stopJmaWarningWatcher(): void {
+  if (warningTimeout) clearTimeout(warningTimeout);
+  if (warningInterval) clearInterval(warningInterval);
 }
