@@ -11,8 +11,10 @@ const WARNING_JSON_URL = (officeCode: string) =>
   `https://www.jma.go.jp/bosai/warning/data/warning/${officeCode}.json`;
 
 // この文字列が status に入っている場合は「発表されていない／解除済み」とみなす。
-// 気象庁側の表記ゆれに備え、それ以外の値はすべて「発表中」として扱う。
-const INACTIVE_STATUSES = new Set(["発表なし", "解除", ""]);
+// 「発表警報・注意報はなし」は警報が一つも発表されていないエリアで status のみ
+// 返され code は付与されない（気象庁APIの実際の仕様）。気象庁側の表記ゆれに備え、
+// それ以外の値はすべて「発表中」として扱う。
+const INACTIVE_STATUSES = new Set(["発表警報・注意報はなし", "解除", ""]);
 
 const STATE_FILE = path.resolve(process.cwd(), "data", "state.json");
 const REQUEST_INTERVAL_MS = 300;
@@ -91,7 +93,7 @@ export async function fetchActiveWarnings(officeCode: string): Promise<WarningCo
   for (const areaType of data.areaTypes ?? []) {
     for (const area of areaType.areas ?? []) {
       for (const warning of area.warnings ?? []) {
-        if (INACTIVE_STATUSES.has(warning.status)) continue;
+        if (!warning.code || INACTIVE_STATUSES.has(warning.status)) continue;
         if (!activeByCode.has(warning.code)) {
           activeByCode.set(warning.code, describeWarningCode(warning.code));
         }
