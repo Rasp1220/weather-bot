@@ -73,10 +73,11 @@ function interpolateTemperature(temperatures: TemperaturePoint[], hour: Date): n
   return undefined;
 }
 
-/** 現在時刻を起点に、1時間刻みでHOURLY_STEPS時間分の予報を組み立てる。 */
+/** 次の正時を起点に、1時間刻みでHOURLY_STEPS時間分（6時間先まで）の予報を組み立てる。 */
 function buildHourlyForecast(forecast: PrefectureForecast, now: Date): PrefectureForecast {
   const startHour = new Date(now);
   startHour.setMinutes(0, 0, 0);
+  startHour.setHours(startHour.getHours() + 1);
 
   const periods: ForecastPeriod[] = [];
   const temperatures: TemperaturePoint[] = [];
