@@ -1,4 +1,4 @@
-import { describeWeatherCode } from "../data/weatherCodes";
+import { describeWeatherCode, type WeatherCategory } from "../data/weatherCodes";
 
 const OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
 const HOURS_TO_SHOW = 12;
@@ -8,6 +8,7 @@ export interface HourlyForecastEntry {
   temperature: number;
   weatherEmoji: string;
   weatherLabel: string;
+  weatherCategory: WeatherCategory;
 }
 
 interface OpenMeteoResponse {
@@ -45,6 +46,7 @@ export async function fetchHourlyForecast(
       temperature: data.hourly.temperature_2m[index],
       weatherEmoji: weather.emoji,
       weatherLabel: weather.label,
+      weatherCategory: weather.category,
     };
   });
 
