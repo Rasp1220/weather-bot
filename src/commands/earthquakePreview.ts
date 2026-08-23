@@ -222,12 +222,11 @@ async function postPreview(
 
   await channel.send({
     content:
-      "🧪 **これはテスト用のプレビューです。実際の地震ではありません。**\nサンプルデータで地震情報通知の見た目を表示しています（メンションは送信されません）。\n\n実際の通知では、この投稿が地震ごとの区切りとなる最初の1通で、続報は画像のみが追加で投稿されます。",
-    files: [new AttachmentBuilder(infoImage, { name: "earthquake.png" })],
-  });
-
-  await channel.send({
-    files: [new AttachmentBuilder(mapImage, { name: "epicenter.png" })],
+      "🧪 **これはテスト用のプレビューです。実際の地震ではありません。**\nサンプルデータで地震情報通知の見た目を表示しています（メンションは送信されません）。\n\n実際の通知では、この投稿が地震ごとの区切りとなる最初の1通で、続報も同じ形式（震度カード+震源地マップ）で追加投稿されます。",
+    files: [
+      new AttachmentBuilder(infoImage, { name: "earthquake.png" }),
+      new AttachmentBuilder(mapImage, { name: "epicenter.png" }),
+    ],
   });
 }
 
