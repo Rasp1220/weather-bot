@@ -65,7 +65,7 @@ export function describeTsunami(status: string | undefined): string {
 }
 
 /** 観測点の一覧を「都道府県 -> その都道府県の最大震度」にまとめる。 */
-function summarizeByPrefecture(points: JmaQuakePoint[] | undefined): Map<string, number> {
+export function summarizeByPrefecture(points: JmaQuakePoint[] | undefined): Map<string, number> {
   const byPrefecture = new Map<string, number>();
 
   for (const point of points ?? []) {
@@ -83,7 +83,7 @@ function summarizeByPrefecture(points: JmaQuakePoint[] | undefined): Map<string,
  * 対象とし、しきい値以上の観測点が1つも取れなかった場合のみ、観測された全都道府県に
  * フォールバックする（対象地方が空になって @here だけになるのを避けるため）。
  */
-function collectAffectedRegions(
+export function collectAffectedRegions(
   prefectureScales: Map<string, number>,
   minScale: number,
 ): Set<RegionName> {

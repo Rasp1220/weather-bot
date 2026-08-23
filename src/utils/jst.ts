@@ -71,6 +71,18 @@ export function formatJstHm(date: Date): string {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
+const secondsFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: JST_TIME_ZONE,
+  second: "2-digit",
+});
+
+/** JST での「YYYY/MM/DD HH:MM:SS」表記（P2P地震情報のタイムスタンプ表記に合わせている）。 */
+export function formatJstDateTime(date: Date): string {
+  const { year, month, day, hour, minute } = jstParts(date);
+  const second = secondsFormatter.format(date).padStart(2, "0");
+  return `${year}/${String(month).padStart(2, "0")}/${String(day).padStart(2, "0")} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${second}`;
+}
+
 /** JST の暦日を表すキー（"2026-08-22"）。日ごとの集計に使う。 */
 export function jstDateKey(date: Date): string {
   const { year, month, day } = jstParts(date);

@@ -5,6 +5,7 @@ import type {
 } from "discord.js";
 import * as weather from "./weather";
 import * as configCommand from "./config";
+import * as earthquakePreview from "./earthquakePreview";
 
 /**
  * スラッシュコマンドの一覧。
@@ -21,7 +22,7 @@ export interface Command {
   autocomplete?(interaction: AutocompleteInteraction): Promise<void>;
 }
 
-export const COMMANDS: Command[] = [weather, configCommand];
+export const COMMANDS: Command[] = [weather, configCommand, earthquakePreview];
 
 export const COMMANDS_BY_NAME: ReadonlyMap<string, Command> = new Map(
   COMMANDS.map((command) => [command.data.name, command]),
