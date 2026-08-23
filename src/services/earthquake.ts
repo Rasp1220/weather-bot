@@ -1,9 +1,10 @@
 import WebSocket from "ws";
-import { EmbedBuilder } from "discord.js";
-import type { APIEmbedField, Client } from "discord.js";
-import { formatScale, SEISMIC_SCALE } from "../data/earthquakeScale";
+import { AttachmentBuilder } from "discord.js";
+import type { Client } from "discord.js";
+import { SEISMIC_SCALE, formatScale } from "../data/earthquakeScale";
 import { findPrefecture, type RegionName } from "../data/prefectures";
 import { isShuttingDown, onShutdown } from "../lifecycle";
+import { renderEarthquakeInfoImage, renderEpicenterMapImage } from "./earthquakeImage";
 import { buildRegionMention, type RegionMention } from "./mentions";
 import { getChannelId } from "./settings";
 import { fetchNotificationChannel } from "../utils/discord";
@@ -15,12 +16,10 @@ const P2P_QUAKE_WS_URL = "wss://api.p2pquake.net/v2/ws";
 const JMA_QUAKE_CODE = 551;
 const RECONNECT_BASE_DELAY_MS = 5 * SECOND_MS;
 const RECONNECT_MAX_DELAY_MS = 5 * MINUTE_MS;
-/** Discord の埋め込みフィールド1つあたりの最大文字数。 */
-const MAX_FIELD_LENGTH = 1024;
 /** メンション済み地震を覚えておく件数（続報の重複メンション判定用）。 */
 const RECENT_EVENT_LIMIT = 50;
 
-interface JmaQuakeHypocenter {
+export interface JmaQuakeHypocenter {
   name?: string;
   latitude?: number;
   longitude?: number;
@@ -29,14 +28,14 @@ interface JmaQuakeHypocenter {
 }
 
 /** 各地の震度観測点（震度速報では市区町村ではなく地域単位で届く）。 */
-interface JmaQuakePoint {
+export interface JmaQuakePoint {
   pref?: string;
   addr?: string;
   isArea?: boolean;
   scale?: number;
 }
 
-interface JmaQuakeMessage {
+export interface JmaQuakeMessage {
   code: number;
   time: string;
   earthquake?: {
@@ -48,7 +47,7 @@ interface JmaQuakeMessage {
   points?: JmaQuakePoint[];
 }
 
-function describeTsunami(status: string | undefined): string {
+export function describeTsunami(status: string | undefined): string {
   switch (status) {
     case "None":
       return "この地震による津波の心配はありません。";
@@ -65,14 +64,8 @@ function describeTsunami(status: string | undefined): string {
   }
 }
 
-function embedColorForScale(maxScale: number): number {
-  if (maxScale >= SEISMIC_SCALE.S6_WEAK) return 0xd32f2f;
-  if (maxScale >= SEISMIC_SCALE.S5_WEAK) return 0xf57c00;
-  return 0xfbc02d;
-}
-
 /** 観測点の一覧を「都道府県 -> その都道府県の最大震度」にまとめる。 */
-function summarizeByPrefecture(points: JmaQuakePoint[] | undefined): Map<string, number> {
+export function summarizeByPrefecture(points: JmaQuakePoint[] | undefined): Map<string, number> {
   const byPrefecture = new Map<string, number>();
 
   for (const point of points ?? []) {
@@ -90,7 +83,7 @@ function summarizeByPrefecture(points: JmaQuakePoint[] | undefined): Map<string,
  * 対象とし、しきい値以上の観測点が1つも取れなかった場合のみ、観測された全都道府県に
  * フォールバックする（対象地方が空になって @here だけになるのを避けるため）。
  */
-function collectAffectedRegions(
+export function collectAffectedRegions(
   prefectureScales: Map<string, number>,
   minScale: number,
 ): Set<RegionName> {
@@ -108,11 +101,16 @@ function collectAffectedRegions(
   return affected.size > 0 ? affected : pickRegions(SEISMIC_SCALE.UNKNOWN);
 }
 
-/** 「震度4: 宮城県、福島県」のように、震度の高い順で観測地域を並べる。 */
-function formatObservedAreas(
+export interface ObservedAreaGroup {
+  scale: number;
+  names: string[];
+}
+
+/** 観測地域を「震度4: 宮城県、福島県」のように、震度の高い順にグループ化する。 */
+export function groupObservedAreas(
   prefectureScales: Map<string, number>,
   minScale: number,
-): string | undefined {
+): ObservedAreaGroup[] {
   const namesByScale = new Map<number, string[]>();
 
   for (const [name, scale] of prefectureScales) {
@@ -122,53 +120,9 @@ function formatObservedAreas(
     else namesByScale.set(scale, [name]);
   }
 
-  if (namesByScale.size === 0) return undefined;
-
-  const text = [...namesByScale.entries()]
+  return [...namesByScale.entries()]
     .sort(([a], [b]) => b - a)
-    .map(([scale, names]) => `震度${formatScale(scale)}: ${names.join("、")}`)
-    .join("\n");
-
-  return text.length > MAX_FIELD_LENGTH ? `${text.slice(0, MAX_FIELD_LENGTH - 1)}…` : text;
-}
-
-function buildEarthquakeEmbed(
-  message: JmaQuakeMessage,
-  prefectureScales: Map<string, number>,
-  regions: Set<RegionName>,
-  minScale: number,
-): EmbedBuilder {
-  const earthquake = message.earthquake;
-  const hypocenter = earthquake?.hypocenter;
-  const maxScale = earthquake?.maxScale ?? SEISMIC_SCALE.UNKNOWN;
-
-  const magnitude =
-    hypocenter?.magnitude != null && hypocenter.magnitude > 0 ? `M${hypocenter.magnitude}` : "不明";
-  const depth =
-    hypocenter?.depth != null && hypocenter.depth >= 0 ? `約${hypocenter.depth}km` : "不明";
-
-  const fields: APIEmbedField[] = [
-    { name: "最大震度", value: formatScale(maxScale), inline: true },
-    { name: "マグニチュード", value: magnitude, inline: true },
-    { name: "深さ", value: depth, inline: true },
-    { name: "震源地", value: hypocenter?.name || "不明", inline: false },
-    { name: "発生時刻", value: earthquake?.time || "不明", inline: false },
-    { name: "対象地方", value: regions.size > 0 ? [...regions].join("、") : "不明", inline: false },
-  ];
-
-  const observedAreas = formatObservedAreas(prefectureScales, minScale);
-  if (observedAreas) {
-    fields.push({ name: "観測地域", value: observedAreas, inline: false });
-  }
-
-  fields.push({ name: "津波", value: describeTsunami(earthquake?.domesticTsunami), inline: false });
-
-  return new EmbedBuilder()
-    .setTitle("🚨 地震情報")
-    .setColor(embedColorForScale(maxScale))
-    .addFields(fields)
-    .setFooter({ text: "情報提供: 気象庁 / P2P地震情報" })
-    .setTimestamp(new Date());
+    .map(([scale, names]) => ({ scale, names }));
 }
 
 /** メンション済みの地震。同一地震の続報で同じ地方を繰り返しメンションしないために使う。 */
@@ -245,9 +199,15 @@ async function handleQuakeMessage(
   const regions = collectAffectedRegions(prefectureScales, minScale);
   const mention = resolveMention(message, maxScale, regions);
 
+  const infoImage = renderEarthquakeInfoImage(message, prefectureScales, regions, minScale);
+  const mapImage = renderEpicenterMapImage(message.earthquake?.hypocenter, prefectureScales);
+
   await channel.send({
     content: mention?.content,
-    embeds: [buildEarthquakeEmbed(message, prefectureScales, regions, minScale)],
+    files: [
+      new AttachmentBuilder(infoImage, { name: "earthquake.png" }),
+      new AttachmentBuilder(mapImage, { name: "epicenter.png" }),
+    ],
     allowedMentions: mention?.allowedMentions ?? { parse: [], roles: [] },
   });
 
