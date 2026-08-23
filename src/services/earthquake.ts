@@ -174,6 +174,17 @@ function resolveMention(
   return buildRegionMention(targets);
 }
 
+/**
+ * 続報群の最初の投稿にだけ付ける案内文。同じ地震の2・3通目は画像のみを投稿するため、
+ * どこからどこまでが同じ地震の続報かをこの文で区切って分かりやすくする。
+ */
+function buildFirstReportHeader(regions: Set<RegionName>): string {
+  const regionsText = [...regions].map((region) => `${region}地方`).join("、");
+  return regionsText
+    ? `${regionsText}で地震が発生しました。情報収集中です。`
+    : "地震が発生しました。情報収集中です。";
+}
+
 async function handleQuakeMessage(
   client: Client,
   message: JmaQuakeMessage,
@@ -197,18 +208,30 @@ async function handleQuakeMessage(
 
   const prefectureScales = summarizeByPrefecture(message.points);
   const regions = collectAffectedRegions(prefectureScales, minScale);
+
+  // resolveMention はこのイベントキーを recentEvents に記録してしまうため、
+  // 「初報かどうか」の判定はその前に行う。
+  const key = eventKey(message);
+  const isFirstReport = key === undefined || !recentEvents.has(key);
+
   const mention = resolveMention(message, maxScale, regions);
 
   const infoImage = renderEarthquakeInfoImage(message, prefectureScales, regions, minScale);
   const mapImage = renderEpicenterMapImage(message.earthquake?.hypocenter, prefectureScales);
 
+  const headerText = isFirstReport ? buildFirstReportHeader(regions) : undefined;
+  const firstContent = [mention?.content, headerText].filter(Boolean).join("\n") || undefined;
+
+  // 震度カードと震源地マップは別々のメッセージに分けて投稿する。同じ地震の続報が
+  // 続くときは、最初の投稿だけに案内文を付けて地震ごとの区切りを分かりやすくする。
   await channel.send({
-    content: mention?.content,
-    files: [
-      new AttachmentBuilder(infoImage, { name: "earthquake.png" }),
-      new AttachmentBuilder(mapImage, { name: "epicenter.png" }),
-    ],
+    content: firstContent,
+    files: [new AttachmentBuilder(infoImage, { name: "earthquake.png" })],
     allowedMentions: mention?.allowedMentions ?? { parse: [], roles: [] },
+  });
+
+  await channel.send({
+    files: [new AttachmentBuilder(mapImage, { name: "epicenter.png" })],
   });
 
   logger.info(
