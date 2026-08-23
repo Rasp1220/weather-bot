@@ -222,16 +222,16 @@ async function handleQuakeMessage(
   const headerText = isFirstReport ? buildFirstReportHeader(regions) : undefined;
   const firstContent = [mention?.content, headerText].filter(Boolean).join("\n") || undefined;
 
-  // 震度カードと震源地マップは別々のメッセージに分けて投稿する。同じ地震の続報が
-  // 続くときは、最初の投稿だけに案内文を付けて地震ごとの区切りを分かりやすくする。
+  // 震度カードと震源地マップは1通のメッセージにまとめて添付する。2通に分けて
+  // 順番に await すると2回分の通信往復が発生し投稿が遅くなるため、1回の送信で
+  // 両方の画像を届ける。
   await channel.send({
     content: firstContent,
-    files: [new AttachmentBuilder(infoImage, { name: "earthquake.png" })],
+    files: [
+      new AttachmentBuilder(infoImage, { name: "earthquake.png" }),
+      new AttachmentBuilder(mapImage, { name: "epicenter.png" }),
+    ],
     allowedMentions: mention?.allowedMentions ?? { parse: [], roles: [] },
-  });
-
-  await channel.send({
-    files: [new AttachmentBuilder(mapImage, { name: "epicenter.png" })],
   });
 
   logger.info(

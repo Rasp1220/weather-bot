@@ -306,21 +306,141 @@ export function renderEarthquakeInfoImage(
 const MAP_CARD_WIDTH = 640;
 const MAP_PADDING = 24;
 const MAP_HEADER_HEIGHT = 96;
-const MAP_LEGEND_HEIGHT = 64;
+const MAP_LEGEND_HEIGHT = 84;
 const MAP_FOOTER_HEIGHT = 40;
 
-// 日本およびその周辺で発生する地震をおおむね収める緯度経度の範囲。
+// 日本およびその周辺で発生する地震をおおむね収める緯度経度の範囲（震源・観測点が
+// ともに不明なときのフォールバック表示にも使う）。
 const LON_MIN = 122;
 const LON_MAX = 154;
 const LAT_MIN = 20;
 const LAT_MAX = 46.5;
+
+// ズーム時に表示範囲の周囲へ追加する余白の比率と、極端に寄りすぎないための最小表示範囲（度）。
+const FOCUS_PADDING_RATIO = 0.35;
+const FOCUS_MIN_SPAN_DEG = 3.5;
+// フォールバック範囲より外側にどこまで広げてよいか（震源が海域で大きく離れている場合の保険）。
+const FOCUS_MAX_OVERFLOW_DEG = 5;
 
 const OCEAN_COLOR = "#0d2b45";
 const GRATICULE_COLOR = "rgba(255, 255, 255, 0.12)";
 const LAND_DEFAULT_COLOR = "#37474f";
 const LAND_STROKE_COLOR = "rgba(255, 255, 255, 0.35)";
 
+interface MapBounds {
+  lonMin: number;
+  lonMax: number;
+  latMin: number;
+  latMax: number;
+}
+
+const FULL_JAPAN_BOUNDS: MapBounds = { lonMin: LON_MIN, lonMax: LON_MAX, latMin: LAT_MIN, latMax: LAT_MAX };
+
+/** P2P地震情報 API は震源が未確定のとき緯度経度に -200 のようなあり得ない値を入れて返すため、その判定に使う。 */
+function hasKnownEpicenter(hypocenter: JmaQuakeHypocenter | undefined): boolean {
+  const { latitude, longitude } = hypocenter ?? {};
+  return (
+    latitude != null &&
+    longitude != null &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180
+  );
+}
+
+function mergeBounds(a: MapBounds | undefined, b: MapBounds): MapBounds {
+  if (!a) return b;
+  return {
+    lonMin: Math.min(a.lonMin, b.lonMin),
+    lonMax: Math.max(a.lonMax, b.lonMax),
+    latMin: Math.min(a.latMin, b.latMin),
+    latMax: Math.max(a.latMax, b.latMax),
+  };
+}
+
+function ringArea(ring: readonly (readonly [number, number])[]): number {
+  let area = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[(i + 1) % ring.length];
+    area += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(area) / 2;
+}
+
+/**
+ * ズーム範囲の算出には、都道府県の本土（面積が最大のリング）だけを使う。
+ * 全リングを使うと、東京都（伊豆・小笠原諸島）のような遠方の離島を含む
+ * 都道府県で表示範囲が異常に広がってしまうため。
+ */
+function prefecturePolygonBounds(name: string): MapBounds | undefined {
+  const prefecture = JAPAN_PREFECTURE_POLYGONS.find((p) => p.name === name);
+  if (!prefecture) return undefined;
+
+  let mainRing: readonly (readonly [number, number])[] | undefined;
+  let mainRingArea = -Infinity;
+  for (const ring of prefecture.polygons) {
+    if (ring.length < 3) continue;
+    const area = ringArea(ring);
+    if (area > mainRingArea) {
+      mainRingArea = area;
+      mainRing = ring;
+    }
+  }
+  if (!mainRing) return undefined;
+
+  let lonMin = Infinity;
+  let lonMax = -Infinity;
+  let latMin = Infinity;
+  let latMax = -Infinity;
+  for (const [lon, lat] of mainRing) {
+    if (lon < lonMin) lonMin = lon;
+    if (lon > lonMax) lonMax = lon;
+    if (lat < latMin) latMin = lat;
+    if (lat > latMax) latMax = lat;
+  }
+  return { lonMin, lonMax, latMin, latMax };
+}
+
+/**
+ * 震源地と、揺れを観測した都道府県が収まる範囲まで地図をズームする。
+ * 震源地・観測点情報がどちらも無い場合は、これまで通り日本全体を表示する。
+ */
+function computeFocusBounds(
+  hypocenter: JmaQuakeHypocenter | undefined,
+  prefectureScales: Map<string, number>,
+): MapBounds {
+  let bounds: MapBounds | undefined;
+
+  if (hasKnownEpicenter(hypocenter)) {
+    const lon = hypocenter!.longitude!;
+    const lat = hypocenter!.latitude!;
+    bounds = mergeBounds(bounds, { lonMin: lon, lonMax: lon, latMin: lat, latMax: lat });
+  }
+
+  for (const name of prefectureScales.keys()) {
+    const prefBounds = prefecturePolygonBounds(name);
+    if (prefBounds) bounds = mergeBounds(bounds, prefBounds);
+  }
+
+  if (!bounds) return FULL_JAPAN_BOUNDS;
+
+  const centerLon = (bounds.lonMin + bounds.lonMax) / 2;
+  const centerLat = (bounds.latMin + bounds.latMax) / 2;
+  const lonSpan = Math.max((bounds.lonMax - bounds.lonMin) * (1 + FOCUS_PADDING_RATIO * 2), FOCUS_MIN_SPAN_DEG);
+  const latSpan = Math.max((bounds.latMax - bounds.latMin) * (1 + FOCUS_PADDING_RATIO * 2), FOCUS_MIN_SPAN_DEG);
+
+  return {
+    lonMin: Math.max(centerLon - lonSpan / 2, FULL_JAPAN_BOUNDS.lonMin - FOCUS_MAX_OVERFLOW_DEG),
+    lonMax: Math.min(centerLon + lonSpan / 2, FULL_JAPAN_BOUNDS.lonMax + FOCUS_MAX_OVERFLOW_DEG),
+    latMin: Math.max(centerLat - latSpan / 2, FULL_JAPAN_BOUNDS.latMin - FOCUS_MAX_OVERFLOW_DEG),
+    latMax: Math.min(centerLat + latSpan / 2, FULL_JAPAN_BOUNDS.latMax + FOCUS_MAX_OVERFLOW_DEG),
+  };
+}
+
 interface MapProjection {
+  bounds: MapBounds;
   mapLeft: number;
   mapTop: number;
   mapWidth: number;
@@ -328,9 +448,14 @@ interface MapProjection {
   project(lon: number, lat: number): [number, number];
 }
 
-function buildProjection(areaWidth: number, areaHeight: number, areaTop: number): MapProjection {
-  const lonRange = LON_MAX - LON_MIN;
-  const latRange = LAT_MAX - LAT_MIN;
+function buildProjection(
+  areaWidth: number,
+  areaHeight: number,
+  areaTop: number,
+  bounds: MapBounds,
+): MapProjection {
+  const lonRange = bounds.lonMax - bounds.lonMin;
+  const latRange = bounds.latMax - bounds.latMin;
   const scale = Math.min(areaWidth / lonRange, areaHeight / latRange);
   const mapWidth = lonRange * scale;
   const mapHeight = latRange * scale;
@@ -338,13 +463,14 @@ function buildProjection(areaWidth: number, areaHeight: number, areaTop: number)
   const mapTop = areaTop + (areaHeight - mapHeight) / 2;
 
   return {
+    bounds,
     mapLeft,
     mapTop,
     mapWidth,
     mapHeight,
     project(lon: number, lat: number): [number, number] {
-      const x = mapLeft + (lon - LON_MIN) * scale;
-      const y = mapTop + (LAT_MAX - lat) * scale;
+      const x = mapLeft + (lon - bounds.lonMin) * scale;
+      const y = mapTop + (bounds.latMax - lat) * scale;
       return [x, y];
     },
   };
@@ -367,21 +493,25 @@ function drawMapHeader(ctx: SKRSContext2D, hypocenter: JmaQuakeHypocenter | unde
   ctx.font = font(17);
   ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
   const name = hypocenter?.name || "不明";
-  const lat = hypocenter?.latitude;
-  const lon = hypocenter?.longitude;
-  const coordText = lat != null && lon != null ? `（北緯${lat.toFixed(1)}° 東経${lon.toFixed(1)}°）` : "";
+  const coordText = hasKnownEpicenter(hypocenter)
+    ? `（北緯${hypocenter!.latitude!.toFixed(1)}° 東経${hypocenter!.longitude!.toFixed(1)}°）`
+    : "";
   ctx.fillText(`${name}${coordText}`, MAP_PADDING, 76);
 }
 
 function drawGraticule(ctx: SKRSContext2D, projection: MapProjection): void {
+  const { lonMin, lonMax, latMin, latMax } = projection.bounds;
+  // ズームして表示範囲が狭いときは1度刻み、広いときは5度刻みで経緯線を引く。
+  const step = lonMax - lonMin <= 6 ? 1 : 5;
+
   ctx.strokeStyle = GRATICULE_COLOR;
   ctx.lineWidth = 1;
   ctx.font = font(11);
   ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
 
-  for (let lon = Math.ceil(LON_MIN / 5) * 5; lon < LON_MAX; lon += 5) {
-    const [x1, y1] = projection.project(lon, LAT_MIN);
-    const [, y2] = projection.project(lon, LAT_MAX);
+  for (let lon = Math.ceil(lonMin / step) * step; lon < lonMax; lon += step) {
+    const [x1, y1] = projection.project(lon, latMin);
+    const [, y2] = projection.project(lon, latMax);
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x1, y2);
@@ -389,9 +519,9 @@ function drawGraticule(ctx: SKRSContext2D, projection: MapProjection): void {
     ctx.fillText(`${lon}°E`, x1 + 2, y1 - 4);
   }
 
-  for (let lat = Math.ceil(LAT_MIN / 5) * 5; lat < LAT_MAX; lat += 5) {
-    const [x1, y1] = projection.project(LON_MIN, lat);
-    const [x2] = projection.project(LON_MAX, lat);
+  for (let lat = Math.ceil(latMin / step) * step; lat < latMax; lat += step) {
+    const [x1, y1] = projection.project(lonMin, lat);
+    const [x2] = projection.project(lonMax, lat);
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y1);
@@ -488,10 +618,11 @@ function drawEpicenterMarker(
   projection: MapProjection,
   hypocenter: JmaQuakeHypocenter | undefined,
 ): void {
-  if (hypocenter?.latitude == null || hypocenter?.longitude == null) return;
+  if (!hasKnownEpicenter(hypocenter)) return;
 
-  const clampedLon = Math.min(Math.max(hypocenter.longitude, LON_MIN), LON_MAX);
-  const clampedLat = Math.min(Math.max(hypocenter.latitude, LAT_MIN), LAT_MAX);
+  const { lonMin, lonMax, latMin, latMax } = projection.bounds;
+  const clampedLon = Math.min(Math.max(hypocenter!.longitude!, lonMin), lonMax);
+  const clampedLat = Math.min(Math.max(hypocenter!.latitude!, latMin), latMax);
   const [x, y] = projection.project(clampedLon, clampedLat);
 
   ctx.strokeStyle = "rgba(255, 82, 82, 0.55)";
@@ -544,7 +675,8 @@ function drawMapLegend(ctx: SKRSContext2D, top: number): void {
     x += swatchSize + gap + 20;
   }
 
-  const noteY = top + MAP_LEGEND_HEIGHT - 11;
+  // 震度スウォッチの行（凡例ラベル）と、下の★/■注記の行との間に余白を空ける。
+  const noteY = top + MAP_LEGEND_HEIGHT - 8;
   ctx.fillStyle = "#ff1744";
   drawStar(ctx, MAP_PADDING + 6, noteY - 4, 7, 3);
   ctx.fill();
@@ -579,8 +711,9 @@ export function renderEpicenterMapImage(
   hypocenter: JmaQuakeHypocenter | undefined,
   prefectureScales: Map<string, number>,
 ): Buffer {
-  const lonRange = LON_MAX - LON_MIN;
-  const latRange = LAT_MAX - LAT_MIN;
+  const bounds = computeFocusBounds(hypocenter, prefectureScales);
+  const lonRange = bounds.lonMax - bounds.lonMin;
+  const latRange = bounds.latMax - bounds.latMin;
   const areaWidth = MAP_CARD_WIDTH - MAP_PADDING * 2;
   const mapAreaHeight = (areaWidth / lonRange) * latRange;
 
@@ -597,10 +730,18 @@ export function renderEpicenterMapImage(
   ctx.fillStyle = OCEAN_COLOR;
   ctx.fillRect(0, MAP_HEADER_HEIGHT, MAP_CARD_WIDTH, mapAreaHeight);
 
-  const projection = buildProjection(areaWidth, mapAreaHeight, MAP_HEADER_HEIGHT);
+  const projection = buildProjection(areaWidth, mapAreaHeight, MAP_HEADER_HEIGHT, bounds);
+
+  // ズームすると表示範囲外の都道府県がヘッダーや凡例の帯にはみ出しうるため、
+  // 地図領域だけに描画をクリップする。
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, MAP_HEADER_HEIGHT, MAP_CARD_WIDTH, mapAreaHeight);
+  ctx.clip();
   drawGraticule(ctx, projection);
   drawPrefectures(ctx, projection, prefectureScales);
   drawEpicenterMarker(ctx, projection, hypocenter);
+  ctx.restore();
 
   drawMapLegend(ctx, MAP_HEADER_HEIGHT + mapAreaHeight);
   drawMapFooter(ctx, MAP_HEADER_HEIGHT + mapAreaHeight + MAP_LEGEND_HEIGHT, MAP_CARD_WIDTH);
