@@ -1,34 +1,11 @@
-import fs from "node:fs";
-import path from "node:path";
-import { createCanvas, GlobalFonts, type SKRSContext2D } from "@napi-rs/canvas";
+import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
 import type { WarningCodeInfo } from "../data/warningCodes";
+import { ensureFontsRegistered, FONT_FAMILY } from "../utils/fonts";
 import { formatJstHm, jstDayDiff, formatJstMonthDay } from "../utils/jst";
-import { logger } from "../utils/logger";
 import type { DailyTemperature, PrefectureForecast } from "./jmaForecast";
 import { shortWeatherLabel, type WeatherCategory } from "./jmaWeatherText";
 
-const FONT_FAMILY = "Noto Sans JP";
-const FONT_PATHS = [
-  "assets/fonts/NotoSansJP-Regular.ttf",
-  "assets/fonts/NotoSansJP-Bold.ttf",
-];
-
-/**
- * 日本語フォントを登録する。未登録のままだと日本語が豆腐（□）になるため、
- * ファイルが見つからない場合は警告を出して気付けるようにする。
- */
-function registerFonts(): void {
-  for (const relativePath of FONT_PATHS) {
-    const fontPath = path.resolve(process.cwd(), relativePath);
-    if (fs.existsSync(fontPath)) {
-      GlobalFonts.registerFromPath(fontPath, FONT_FAMILY);
-    } else {
-      logger.warn(`日本語フォントが見つかりません: ${fontPath}（画像内の文字が正しく表示されない可能性があります）`);
-    }
-  }
-}
-
-registerFonts();
+ensureFontsRegistered();
 
 const CARD_WIDTH = 820;
 const PADDING = 32;

@@ -185,6 +185,7 @@ WebSocket 接続・各種タイマ・Discord クライアントを閉じてか�
   - 予報区コード → 都道府県 → 地方区分のマッピングは、気象庁の公開エリアマスタ（`https://www.jma.go.jp/bosai/common/const/area.json`）を起動時・24時間ごとに自動取得して構築しています（ハードコードしていないため、気象庁側の予報区構成変更にも追従できます）。
   - **竜巻注意情報・記録的短時間大雨情報・噴火速報について**: これらは上記の警報・注意報API（コード体系）とは別の情報として気象庁から発表されており、それぞれ別形式のフィード（例: 竜巻注意情報は `https://www.jma.go.jp/bosai/information/data/r8/tornado.json` 系のエンドポイントが候補）での取得が必要です。本リポジトリのビルド環境からは気象庁サイトへの外部通信が制限されており、実際のJSONスキーマを検証できなかったため、今回のMVPには含めていません。`src/services/jmaWarnings.ts` と同様のポーリング・差分検知パターンで拡張可能です。実装時は、本番環境から対象URLに実際にアクセスしてレスポンス構造を確認した上で実装することを推奨します。
 - **Open-Meteo API**: 公式の無料APIで、APIキーは不要です。
+- **震源地マップの都道府県境界データ**: [dataofjapan/land](https://github.com/dataofjapan/land)（国土数値情報を基に作成・CC BY 4.0）を、画像として描画できるサイズまで簡略化（Douglas-Peucker法による間引き）した上で `src/data/japanMap.ts` に静的データとして同梱しています。実行時に外部へアクセスすることはありません。
 
 ## ディレクトリ構成
 
@@ -196,9 +197,11 @@ src/
   data/
     prefectures.ts            都道府県マスタ（地方区分）
     warningCodes.ts           気象庁 警報・注意報コード対応表
-    earthquakeScale.ts        震度スケール対応表
+    earthquakeScale.ts        震度スケール対応表（震度⇔色の対応含む）
+    japanMap.ts               震源地マップ描画用の都道府県境界データ（簡略化）
   services/
     earthquake.ts             P2P地震情報 WebSocket クライアント
+    earthquakeImage.ts        地震情報カード・震源地マップ画像の描画
     jmaAreaMaster.ts          気象庁エリアマスタ取得（予報区→地方区分マッピング）
     jmaWarnings.ts            警報・注意報ポーリング＆差分通知
     jmaForecast.ts            気象庁 天気予報API の取得・整形
@@ -216,6 +219,7 @@ src/
     http.ts                   外部API向け JSON 取得（タイムアウト・中断対応）
     jsonStore.ts              data/ 配下 JSON の読み書き（アトミック保存）
     jst.ts                    日本時間での日時整形
+    fonts.ts                  画像描画用の日本語フォント登録（1度だけ実行）
     logger.ts                 ログ出力
     time.ts                   時間定数と中断可能な待機
     timeSeries.ts             時刻付き系列の検索ヘルパー
