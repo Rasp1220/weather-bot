@@ -108,8 +108,8 @@ async function announceNewWarnings(
   const channel = await fetchNotificationChannel(client, channelId);
   if (!channel) return;
 
-  const lines = newCodes.map((code) => {
-    const warning = describeWarningCode(code);
+  const warnings = newCodes.map((code) => describeWarningCode(code));
+  const lines = warnings.map((warning) => {
     const emoji =
       warning.tier === "special" ? "🟣" : warning.tier === "warning" ? "🔴" : "🟡";
     return `${emoji} **${warning.name}**`;
@@ -122,15 +122,18 @@ async function announceNewWarnings(
     .setFooter({ text: "情報提供: 気象庁" })
     .setTimestamp(new Date());
 
-  const mention = buildRegionMention([info.region]);
+  // 注意報のみの場合はメンションを付けない。警報・特別警報が1つでも含まれる場合のみ通知対象とする。
+  const hasWarningOrAbove = warnings.some((warning) => warning.tier !== "advisory");
+  const mention = hasWarningOrAbove ? buildRegionMention([info.region]) : undefined;
+
   await channel.send({
-    content: mention.content,
+    content: mention?.content ?? "",
     embeds: [embed],
-    allowedMentions: mention.allowedMentions,
+    allowedMentions: mention?.allowedMentions ?? { parse: [], roles: [] },
   });
 
   logger.info(
-    `警報を通知しました: ${info.prefecture} (${info.region}) - ${newCodes.join(", ")} / メンション: ${mention.description}`,
+    `警報を通知しました: ${info.prefecture} (${info.region}) - ${newCodes.join(", ")} / メンション: ${mention?.description ?? "なし（注意報のみ）"}`,
   );
 }
 
