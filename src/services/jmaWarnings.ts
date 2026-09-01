@@ -177,10 +177,11 @@ async function checkOffice(
   // 予報区の構成変更などでエリアそのものが増減した場合も保存対象とする。
   if (Object.keys(nextForOffice).length !== Object.keys(previousForOffice).length) changed = true;
 
-  state[officeCode] = nextForOffice;
-
   if (newlyIssued.size > 0) {
     if (channelId) {
+      // 通知の送信に失敗した場合はここで例外が投げられ、下の状態保存が実行されない。
+      // 先に状態を保存してしまうと、送信に失敗した警報も「通知済み」として扱われ、
+      // 次回以降のポーリングで再送されなくなってしまうため、送信成功を確認してから保存する。
       await announceNewWarnings(client, channelId, info, [...newlyIssued]);
     } else {
       logger.warn(
@@ -188,6 +189,8 @@ async function checkOffice(
       );
     }
   }
+
+  state[officeCode] = nextForOffice;
 
   return changed;
 }

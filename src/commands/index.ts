@@ -6,6 +6,7 @@ import type {
 import * as weather from "./weather";
 import * as configCommand from "./config";
 import * as earthquakePreview from "./earthquakePreview";
+import * as help from "./help";
 
 /**
  * スラッシュコマンドの一覧。
@@ -22,7 +23,7 @@ export interface Command {
   autocomplete?(interaction: AutocompleteInteraction): Promise<void>;
 }
 
-export const COMMANDS: Command[] = [weather, configCommand, earthquakePreview];
+export const COMMANDS: Command[] = [weather, configCommand, earthquakePreview, help];
 
 export const COMMANDS_BY_NAME: ReadonlyMap<string, Command> = new Map(
   COMMANDS.map((command) => [command.data.name, command]),
