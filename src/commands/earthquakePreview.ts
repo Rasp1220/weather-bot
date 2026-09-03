@@ -207,12 +207,7 @@ async function postPreview(
   const prefectureScales = summarizeByPrefecture(message.points);
   const regions = collectAffectedRegions(prefectureScales, config.earthquakeMinScale);
 
-  const infoImage = renderEarthquakeInfoImage(
-    message,
-    prefectureScales,
-    regions,
-    config.earthquakeMinScale,
-  );
+  const infoImage = renderEarthquakeInfoImage(message, prefectureScales, regions);
   const mapImage = renderEpicenterMapImage(message.earthquake?.hypocenter, prefectureScales);
 
   const channel = interaction.channel;

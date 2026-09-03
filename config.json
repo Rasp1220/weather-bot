@@ -11,5 +11,5 @@
     "九州・沖縄": ""
   },
   "jmaPollingIntervalMinutes": 5,
-  "earthquakeMinScale": 30
+  "earthquakeMinScale": 40
 }
