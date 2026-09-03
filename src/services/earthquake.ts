@@ -216,7 +216,7 @@ async function handleQuakeMessage(
 
   const mention = resolveMention(message, maxScale, regions);
 
-  const infoImage = renderEarthquakeInfoImage(message, prefectureScales, regions, minScale);
+  const infoImage = renderEarthquakeInfoImage(message, prefectureScales, regions);
   const mapImage = renderEpicenterMapImage(message.earthquake?.hypocenter, prefectureScales);
 
   const headerText = isFirstReport ? buildFirstReportHeader(regions) : undefined;

@@ -63,5 +63,5 @@ export const config = {
     fileConfig.jmaPollingIntervalMinutes,
     5,
   ),
-  earthquakeMinScale: resolveNumber("EARTHQUAKE_MIN_SCALE", fileConfig.earthquakeMinScale, 30),
+  earthquakeMinScale: resolveNumber("EARTHQUAKE_MIN_SCALE", fileConfig.earthquakeMinScale, 40),
 };

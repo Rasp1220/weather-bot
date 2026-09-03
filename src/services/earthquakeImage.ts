@@ -71,6 +71,9 @@ const VALUE_LINE_HEIGHT = 26;
 const OBSERVED_LINE_HEIGHT = 30;
 const FOOTER_HEIGHT = 46;
 
+/** 「観測地域」欄は通知しきい値に関わらず、震度1以上を観測した都道府県をすべて表示する。 */
+const OBSERVED_AREA_MIN_SCALE = SEISMIC_SCALE.S1;
+
 /** ラベル/値の行の高さ。値が折り返された場合は行数に応じて高くする。 */
 function infoRowHeight(lineCount: number): number {
   return Math.max(ROW_HEIGHT, 36 + lineCount * VALUE_LINE_HEIGHT);
@@ -237,7 +240,6 @@ export function renderEarthquakeInfoImage(
   message: JmaQuakeMessage,
   prefectureScales: Map<string, number>,
   regions: Set<RegionName>,
-  minScale: number,
 ): Buffer {
   const earthquake = message.earthquake;
   const hypocenter = earthquake?.hypocenter;
@@ -248,7 +250,7 @@ export function renderEarthquakeInfoImage(
   const depth =
     hypocenter?.depth != null && hypocenter.depth >= 0 ? `約${hypocenter.depth}km` : "不明";
   const regionsText = regions.size > 0 ? [...regions].join("、") : "不明";
-  const observedGroups = groupObservedAreas(prefectureScales, minScale);
+  const observedGroups = groupObservedAreas(prefectureScales, OBSERVED_AREA_MIN_SCALE);
   const tsunamiText = describeTsunami(earthquake?.domesticTsunami);
 
   // 高さを事前に見積もるため、まず計測用の一時キャンバスで折り返し行数を数える。
