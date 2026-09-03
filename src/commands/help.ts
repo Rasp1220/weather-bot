@@ -4,6 +4,8 @@ import {
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from "discord.js";
+import { config } from "../config";
+import { formatScale } from "../data/earthquakeScale";
 
 /**
  * このBotで使えるコマンドと自動通知機能の一覧を表示する。
@@ -40,7 +42,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       {
         name: "🔔 自動通知（コマンド不要）",
         value:
-          "震度3以上の地震情報と、気象庁の警報・特別警報・注意報の新規発表を、被災した地方のロール（未設定時は@here）宛に自動投稿します。\n" +
+          // しきい値は設定で変更できるため、文言に直接書かず設定値から組み立てる。
+          `震度${formatScale(config.earthquakeMinScale)}以上の地震情報と、気象庁の警報・特別警報・注意報の新規発表を、被災した地方のロール（未設定時は@here）宛に自動投稿します。\n` +
           "通知先チャンネルが未設定の場合は届きません。`/config channel set` で設定してください。",
       },
     )
