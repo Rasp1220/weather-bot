@@ -6,8 +6,11 @@ import {
   PermissionFlagsBits,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
+  type GuildBasedChannel,
 } from "discord.js";
 import type { RegionName } from "../data/prefectures";
+import { NOTIFY_MIN_LEVEL } from "../data/warningCodes";
+import { getWarningWatcherStatus } from "../services/jmaWarnings";
 import {
   getAllChannelIds,
   getAllRegionRoleIds,
@@ -16,6 +19,7 @@ import {
   setRegionRoleId,
   type NotificationTarget,
 } from "../services/settings";
+import { formatJstDateTime } from "../utils/jst";
 
 const TARGET_LABELS: Record<NotificationTarget, string> = {
   earthquake: "地震速報",
@@ -99,15 +103,50 @@ function replyPrivately(
   return interaction.reply({ content, flags: MessageFlags.Ephemeral });
 }
 
+/** 自動通知に必要な権限。1つでも欠けると通知が届かないため、設定時にその場で検査する。 */
+const REQUIRED_NOTIFICATION_PERMISSIONS = [
+  { flag: PermissionFlagsBits.ViewChannel, label: "チャンネルを見る" },
+  { flag: PermissionFlagsBits.SendMessages, label: "メッセージを送信" },
+  { flag: PermissionFlagsBits.EmbedLinks, label: "埋め込みリンク" },
+  { flag: PermissionFlagsBits.MentionEveryone, label: "@everyone、@here、全てのロールにメンション" },
+] as const;
+
+/** Bot が通知チャンネルに対して持っていない権限の名称一覧を返す。 */
+function findMissingPermissions(
+  interaction: ChatInputCommandInteraction,
+  channel: GuildBasedChannel,
+): string[] {
+  const me = interaction.guild?.members.me;
+  if (!me) return [];
+
+  const permissions = channel.permissionsFor(me);
+  if (!permissions) return [];
+
+  return REQUIRED_NOTIFICATION_PERMISSIONS.filter(({ flag }) => !permissions.has(flag)).map(
+    ({ label }) => label,
+  );
+}
+
 async function setNotificationChannel(interaction: ChatInputCommandInteraction): Promise<void> {
   const target = interaction.options.getString("target", true) as NotificationTarget;
-  const channel = interaction.options.getChannel("channel", true);
+  const selected = interaction.options.getChannel("channel", true);
 
-  setChannelId(target, channel.id);
-  await replyPrivately(
-    interaction,
-    `✅ ${TARGET_LABELS[target]}の通知先チャンネルを <#${channel.id}> に設定しました。`,
-  );
+  setChannelId(target, selected.id);
+
+  // 「チャンネルは設定したのに通知が来ない」の大半は Bot の権限不足なので、その場で知らせる。
+  const guildChannel = interaction.guild?.channels.cache.get(selected.id);
+  const missing = guildChannel ? findMissingPermissions(interaction, guildChannel) : [];
+
+  const lines = [`✅ ${TARGET_LABELS[target]}の通知先チャンネルを <#${selected.id}> に設定しました。`];
+  if (missing.length > 0) {
+    lines.push(
+      "",
+      `⚠️ このチャンネルで Bot に以下の権限が不足しています。付与しないと通知が届きません。`,
+      ...missing.map((label) => `・${label}`),
+    );
+  }
+
+  await replyPrivately(interaction, lines.join("\n"));
 }
 
 async function setRegionRole(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -131,6 +170,56 @@ async function unsetRegionRole(interaction: ChatInputCommandInteraction): Promis
   );
 }
 
+/**
+ * 警報の自動通知が実際に動いているかを可視化する。
+ * 「警報が出ているのに通知が来ない」ときに、エリアマスタ未取得・チャンネル未設定・
+ * 権限不足・気象庁API障害のどれで止まっているかをログを見ずに切り分けられるようにする。
+ */
+function buildWarningWatcherLines(interaction: ChatInputCommandInteraction): string[] {
+  const status = getWarningWatcherStatus();
+  const lines: string[] = [`通知しきい値: 警戒レベル${NOTIFY_MIN_LEVEL}以上（警報・特別警報）`];
+
+  lines.push(
+    `監視中の予報区: ${
+      status.officeCount > 0
+        ? `${status.officeCount}件`
+        : "0件 ⚠️ 気象庁エリアマスタを取得できていません"
+    }`,
+  );
+  lines.push(
+    `最終チェック: ${
+      status.lastPollFinishedAt ? formatJstDateTime(status.lastPollFinishedAt) : "未実行"
+    }`,
+  );
+  if (status.fetchErrorCount > 0) {
+    lines.push(`⚠️ 直近のチェックで${status.fetchErrorCount}件の予報区の取得に失敗しました。`);
+  }
+  lines.push(
+    `最終通知: ${status.lastNotifiedAt ? formatJstDateTime(status.lastNotifiedAt) : "なし"}`,
+  );
+  if (status.pendingOfficeCount > 0) {
+    lines.push(`⚠️ 未送信の警報: ${status.pendingOfficeCount}件（次回チェックで再送します）`);
+  }
+  if (status.lastDeliveryError) {
+    lines.push(`⚠️ ${status.lastDeliveryError}`);
+  }
+
+  const warningChannelId = getAllChannelIds().warning;
+  const warningChannel = warningChannelId
+    ? interaction.guild?.channels.cache.get(warningChannelId)
+    : undefined;
+  if (warningChannel) {
+    const missing = findMissingPermissions(interaction, warningChannel);
+    lines.push(
+      missing.length > 0
+        ? `⚠️ 通知チャンネルの権限不足: ${missing.join("、")}`
+        : "通知チャンネルの権限: OK",
+    );
+  }
+
+  return lines;
+}
+
 async function showSettings(interaction: ChatInputCommandInteraction): Promise<void> {
   const channels = getAllChannelIds();
   const regionRoleIds = getAllRegionRoleIds();
@@ -150,6 +239,7 @@ async function showSettings(interaction: ChatInputCommandInteraction): Promise<v
     .addFields(
       { name: "通知先チャンネル", value: channelLines.join("\n") },
       { name: "地方ロール紐付け", value: roleLines.join("\n") },
+      { name: "気象警報の自動通知", value: buildWarningWatcherLines(interaction).join("\n") },
     )
     .setColor(0x4fc3f7)
     .setTimestamp(new Date());

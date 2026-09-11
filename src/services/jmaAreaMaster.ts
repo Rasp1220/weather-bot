@@ -1,8 +1,8 @@
-import { scheduleInterval, shutdownSignal } from "../lifecycle";
+import { isShuttingDown, onShutdown, scheduleInterval, shutdownSignal } from "../lifecycle";
 import { PREFECTURES, type RegionName } from "../data/prefectures";
 import { fetchJson } from "../utils/http";
 import { logger } from "../utils/logger";
-import { DAY_MS } from "../utils/time";
+import { DAY_MS, MINUTE_MS, SECOND_MS } from "../utils/time";
 
 /**
  * 気象庁の警報・注意報API（{code}.json）で使われる予報区コードは、都道府県と
@@ -14,6 +14,14 @@ import { DAY_MS } from "../utils/time";
 
 const AREA_MASTER_URL = "https://www.jma.go.jp/bosai/common/const/area.json";
 const REFRESH_INTERVAL_MS = DAY_MS;
+/**
+ * 取得に失敗したときの再試行間隔（指数バックオフ）。
+ * エリアマスタが無いと警報監視は1件もチェックできないため、次の定期取得（24時間後）まで
+ * 待っていると丸一日通知が止まる。起動直後にネットワークが未確立だった場合などに備え、
+ * 成功するまで短い間隔で再試行する。
+ */
+const RETRY_BASE_DELAY_MS = 30 * SECOND_MS;
+const RETRY_MAX_DELAY_MS = 10 * MINUTE_MS;
 
 interface JmaOfficeEntry {
   name: string;
@@ -112,17 +120,38 @@ export function getRepresentativeOfficeCode(prefectureName: string): string | un
 }
 
 export function startAreaMasterRefresh(): void {
-  const refresh = (isInitial: boolean): void => {
-    loadJmaOfficeRegionMap().catch((error) =>
-      logger.error(
-        isInitial
-          ? "気象庁エリアマスタの初回取得に失敗しました。警報監視が開始できません。"
-          : "気象庁エリアマスタの再取得に失敗しました。",
-        error,
-      ),
-    );
+  let retryCount = 0;
+  let retryTimer: NodeJS.Timeout | undefined;
+
+  // 再試行は成功するまで繰り返すため、タイマの登録は1本に保つ（解除漏れで終了が遅れないように）。
+  onShutdown(() => clearTimeout(retryTimer));
+
+  const refresh = (): void => {
+    if (isShuttingDown()) return;
+
+    loadJmaOfficeRegionMap()
+      .then(() => {
+        retryCount = 0;
+      })
+      .catch((error) => {
+        if (isShuttingDown()) return;
+
+        // 一度取得できていれば古いマッピングで動き続けられるため、失敗の深刻度が異なる。
+        const hasCache = cachedMap !== null;
+        const delayMs = Math.min(RETRY_BASE_DELAY_MS * 2 ** retryCount, RETRY_MAX_DELAY_MS);
+        retryCount++;
+
+        logger.error(
+          hasCache
+            ? `気象庁エリアマスタの再取得に失敗しました。取得済みのマッピングで監視を継続し、${delayMs / SECOND_MS}秒後に再試行します。`
+            : `気象庁エリアマスタの取得に失敗しました。取得できるまで警報監視は動作しません。${delayMs / SECOND_MS}秒後に再試行します。`,
+          error,
+        );
+        clearTimeout(retryTimer);
+        retryTimer = setTimeout(refresh, delayMs);
+      });
   };
 
-  refresh(true);
-  scheduleInterval(() => refresh(false), REFRESH_INTERVAL_MS);
+  refresh();
+  scheduleInterval(refresh, REFRESH_INTERVAL_MS);
 }
