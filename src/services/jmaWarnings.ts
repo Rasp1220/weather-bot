@@ -1,7 +1,13 @@
 import { EmbedBuilder } from "discord.js";
 import type { Client } from "discord.js";
 import { getCachedOfficeRegionMap, type OfficeRegionInfo } from "./jmaAreaMaster";
-import { describeWarningCode, shouldNotify, type WarningCodeInfo } from "../data/warningCodes";
+import {
+  describeWarningCode,
+  isUnknownWarningCode,
+  NOTIFY_MIN_LEVEL,
+  shouldNotify,
+  type WarningCodeInfo,
+} from "../data/warningCodes";
 import { isShuttingDown, scheduleInterval, scheduleTimeout, shutdownSignal } from "../lifecycle";
 import { buildRegionMention } from "./mentions";
 import { getChannelId } from "./settings";
@@ -52,6 +58,34 @@ type WarningState = Record<string, ActiveCodesByArea>;
 
 const state: WarningState = readJsonFile<WarningState>(STATE_FILE, STATE_DESCRIPTION) ?? {};
 
+/**
+ * 警報監視の稼働状況。「警報が出ているのに通知が来ない」ときに、どこで止まっているかを
+ * `/config show` から確認できるようにするための診断情報。
+ */
+interface WatcherStatus {
+  lastPollStartedAt?: Date;
+  lastPollFinishedAt?: Date;
+  /** 直近の巡回で参照した予報区の数。0 のままならエリアマスタが取得できていない。 */
+  officeCount: number;
+  /** 直近の巡回で気象庁からの取得に失敗した予報区の数。 */
+  fetchErrorCount: number;
+  lastNotifiedAt?: Date;
+  /** 通知に失敗して次回ポーリングに持ち越している予報区の数。 */
+  pendingOfficeCount: number;
+  /** 直近の通知失敗の理由（チャンネル未設定・権限不足など）。 */
+  lastDeliveryError?: string;
+}
+
+const watcherStatus: WatcherStatus = {
+  officeCount: 0,
+  fetchErrorCount: 0,
+  pendingOfficeCount: 0,
+};
+
+export function getWarningWatcherStatus(): Readonly<WatcherStatus> {
+  return { ...watcherStatus };
+}
+
 function fetchOfficeWarnings(officeCode: string): Promise<JmaWarningResponse> {
   return fetchJson<JmaWarningResponse>(warningJsonUrl(officeCode), { signal: shutdownSignal });
 }
@@ -99,42 +133,66 @@ export async function fetchActiveWarnings(officeCode: string): Promise<WarningCo
   );
 }
 
+/**
+ * 新規発表された警報を通知する。
+ * 送信できた場合のみ true を返す。false を返した場合、呼び出し側は発表状況を保存せず、
+ * 次回のポーリングで同じ警報を再度通知対象として扱う（取りこぼしを残さないため）。
+ */
 async function announceNewWarnings(
   client: Client,
   channelId: string,
   info: OfficeRegionInfo,
   newCodes: string[],
-): Promise<void> {
+): Promise<boolean> {
   const channel = await fetchNotificationChannel(client, channelId);
-  if (!channel) return;
+  if (!channel) {
+    watcherStatus.lastDeliveryError =
+      `通知チャンネル(${channelId})にアクセスできません。チャンネルIDと、Botの「チャンネルを見る」「メッセージを送信」権限を確認してください。`;
+    return false;
+  }
 
-  const warnings = newCodes.map((code) => describeWarningCode(code));
+  const warnings = newCodes
+    .map((code) => describeWarningCode(code))
+    .sort((a, b) => WARNING_TIER_ORDER[a.tier] - WARNING_TIER_ORDER[b.tier]);
+
   const lines = warnings.map((warning) => {
-    const emoji =
-      warning.tier === "special" ? "🟣" : warning.tier === "warning" ? "🔴" : "🟡";
-    return `${emoji} **${warning.name}**`;
+    const emoji = warning.tier === "special" ? "🟣" : "🔴";
+    return `${emoji} **${warning.name}**（警戒レベル${warning.level}相当）`;
   });
 
+  const highestLevel = Math.max(...warnings.map((warning) => warning.level));
   const embed = new EmbedBuilder()
-    .setTitle(`⚠️ 気象警報・注意報発表（${info.region}地方）`)
-    .setColor(0xff5252)
+    .setTitle(`⚠️ 気象警報発表（${info.region}地方）`)
+    .setColor(highestLevel >= 5 ? 0x8e24aa : 0xff5252)
     .setDescription(`**対象地域:** ${info.prefecture}\n\n${lines.join("\n")}`)
     .setFooter({ text: "情報提供: 気象庁" })
     .setTimestamp(new Date());
 
-  // 注意報のみの場合はメンションを付けない。警報・特別警報が1つでも含まれる場合のみ通知対象とする。
-  const hasWarningOrAbove = warnings.some((warning) => warning.tier !== "advisory");
-  const mention = hasWarningOrAbove ? buildRegionMention([info.region]) : undefined;
+  // 通知対象は警戒レベル3以上（警報・特別警報）のみなので、常にメンションする。
+  const mention = buildRegionMention([info.region]);
 
-  await channel.send({
-    content: mention?.content ?? "",
-    embeds: [embed],
-    allowedMentions: mention?.allowedMentions ?? { parse: [], roles: [] },
-  });
+  try {
+    await channel.send({
+      content: mention.content,
+      embeds: [embed],
+      allowedMentions: mention.allowedMentions,
+    });
+  } catch (error) {
+    watcherStatus.lastDeliveryError = `通知チャンネル(${channelId})への送信に失敗しました: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    logger.error(`警報の通知送信に失敗しました: ${info.prefecture} (${info.region})`, error);
+    return false;
+  }
 
+  watcherStatus.lastNotifiedAt = new Date();
+  watcherStatus.lastDeliveryError = undefined;
   logger.info(
-    `警報を通知しました: ${info.prefecture} (${info.region}) - ${newCodes.join(", ")} / メンション: ${mention?.description ?? "なし（注意報のみ）"}`,
+    `警報を通知しました: ${info.prefecture} (${info.region}) - ${warnings
+      .map((warning) => warning.name)
+      .join(", ")} / メンション: ${mention.description}`,
   );
+  return true;
 }
 
 /**
@@ -155,10 +213,18 @@ async function checkOffice(
   let changed = false;
 
   for (const { areaCode, warnings } of iterateAreas(data)) {
-    const activeCodes = warnings
-      .filter(isActive)
-      .map((warning) => warning.code)
-      .filter(shouldNotify);
+    const activeCodes: string[] = [];
+    for (const warning of warnings) {
+      if (!isActive(warning)) continue;
+      if (isUnknownWarningCode(warning.code)) {
+        // 気象庁がコード体系を変更した場合に気付けるよう記録する（通知はしない）。
+        logger.warn(
+          `未知の警報コードを受信しました (officeCode=${officeCode}, areaCode=${areaCode}, code=${warning.code}, status=${warning.status})`,
+        );
+        continue;
+      }
+      if (shouldNotify(warning.code)) activeCodes.push(warning.code);
+    }
 
     nextForOffice[areaCode] = activeCodes;
 
@@ -178,15 +244,21 @@ async function checkOffice(
   if (Object.keys(nextForOffice).length !== Object.keys(previousForOffice).length) changed = true;
 
   if (newlyIssued.size > 0) {
-    if (channelId) {
-      // 通知の送信に失敗した場合はここで例外が投げられ、下の状態保存が実行されない。
-      // 先に状態を保存してしまうと、送信に失敗した警報も「通知済み」として扱われ、
-      // 次回以降のポーリングで再送されなくなってしまうため、送信成功を確認してから保存する。
-      await announceNewWarnings(client, channelId, info, [...newlyIssued]);
-    } else {
-      logger.warn(
-        `警報通知チャンネルが未設定のため通知をスキップしました (${info.prefecture}) 。/config channel set コマンドで設定してください。`,
-      );
+    // 通知できなかった場合は発表状況を保存しない。保存してしまうと、実際には投稿されて
+    // いない警報が「通知済み」として扱われ、以後のポーリングで二度と再送されなくなる。
+    // チャンネル未設定・権限不足・Discord APIエラーのいずれも同じ扱いとし、
+    // 設定や権限が直った時点で次のポーリングから通知されるようにする。
+    if (!channelId) {
+      watcherStatus.lastDeliveryError =
+        "警報通知チャンネルが未設定です。/config channel set コマンドで設定してください。";
+      watcherStatus.pendingOfficeCount++;
+      return false;
+    }
+
+    const delivered = await announceNewWarnings(client, channelId, info, [...newlyIssued]);
+    if (!delivered) {
+      watcherStatus.pendingOfficeCount++;
+      return false;
     }
   }
 
@@ -195,14 +267,28 @@ async function checkOffice(
   return changed;
 }
 
-async function pollAll(client: Client): Promise<void> {
+/** 全予報区を1周チェックする。定期ポーリングの本体。 */
+export async function runWarningCheck(client: Client): Promise<void> {
+  watcherStatus.lastPollStartedAt = new Date();
+  watcherStatus.fetchErrorCount = 0;
+  watcherStatus.pendingOfficeCount = 0;
+
   const officeMap = getCachedOfficeRegionMap();
   if (!officeMap || officeMap.size === 0) {
+    watcherStatus.officeCount = 0;
+    watcherStatus.lastPollFinishedAt = new Date();
     logger.warn("気象庁エリアマスタが未取得のため、今回の警報チェックをスキップします。");
     return;
   }
+  watcherStatus.officeCount = officeMap.size;
 
   const channelId = getChannelId("warning");
+  if (!channelId) {
+    logger.warn(
+      "警報通知チャンネルが未設定です。新規発表された警報は保留され、/config channel set で設定後のポーリングで通知されます。",
+    );
+  }
+
   let changed = false;
 
   for (const [officeCode, info] of officeMap) {
@@ -212,6 +298,7 @@ async function pollAll(client: Client): Promise<void> {
       changed = (await checkOffice(client, channelId, officeCode, info)) || changed;
     } catch (error) {
       if (isShuttingDown()) break;
+      watcherStatus.fetchErrorCount++;
       logger.error(`警報情報の取得に失敗しました (officeCode=${officeCode})`, error);
     }
 
@@ -223,6 +310,16 @@ async function pollAll(client: Client): Promise<void> {
   if (changed) {
     writeJsonFile(STATE_FILE, state, STATE_DESCRIPTION, false);
   }
+
+  watcherStatus.lastPollFinishedAt = new Date();
+
+  if (watcherStatus.pendingOfficeCount > 0) {
+    logger.warn(
+      `${watcherStatus.pendingOfficeCount}件の予報区で警報を通知できませんでした。次回のポーリングで再送します。理由: ${
+        watcherStatus.lastDeliveryError ?? "不明"
+      }`,
+    );
+  }
 }
 
 export function startJmaWarningWatcher(client: Client, intervalMinutes: number): void {
@@ -233,13 +330,16 @@ export function startJmaWarningWatcher(client: Client, intervalMinutes: number):
     if (running || isShuttingDown()) return;
     running = true;
 
-    pollAll(client)
+    runWarningCheck(client)
       .catch((error) => logger.error("警報チェックの実行中にエラーが発生しました。", error))
       .finally(() => {
         running = false;
       });
   };
 
+  logger.info(
+    `警報監視を開始します（${intervalMinutes}分間隔 / 警戒レベル${NOTIFY_MIN_LEVEL}以上を通知）。`,
+  );
   scheduleTimeout(run, INITIAL_DELAY_MS);
   scheduleInterval(run, intervalMinutes * MINUTE_MS);
 }
