@@ -16,6 +16,15 @@ const P2P_QUAKE_WS_URL = "wss://api.p2pquake.net/v2/ws";
 const JMA_QUAKE_CODE = 551;
 const RECONNECT_BASE_DELAY_MS = 5 * SECOND_MS;
 const RECONNECT_MAX_DELAY_MS = 5 * MINUTE_MS;
+/** 死活監視の ping を送る間隔。 */
+const HEARTBEAT_INTERVAL_MS = 30 * SECOND_MS;
+/** この時間なにも受信（pong 含む）できなければ、接続が死んでいるとみなして再接続する。 */
+const HEARTBEAT_TIMEOUT_MS = 90 * SECOND_MS;
+/**
+ * WebSocket のハンドシェイク（接続確立）のタイムアウト。大きな地震の直後などは接続先が
+ * 混雑して確立に数十秒かかることがあるため、短すぎて毎回打ち切らないよう余裕を持たせる。
+ */
+const HANDSHAKE_TIMEOUT_MS = 60 * SECOND_MS;
 /** メンション済み地震を覚えておく件数（続報の重複メンション判定用）。 */
 const RECENT_EVENT_LIMIT = 50;
 
@@ -248,15 +257,41 @@ export function startEarthquakeWatcher(client: Client, minScale: number): void {
     if (isShuttingDown()) return;
 
     logger.info("P2P地震情報 WebSocket に接続します...");
-    const ws = new WebSocket(P2P_QUAKE_WS_URL);
+    const ws = new WebSocket(P2P_QUAKE_WS_URL, { handshakeTimeout: HANDSHAKE_TIMEOUT_MS });
     socket = ws;
+
+    // 回線の断絶などで TCP 接続だけが残ると close イベントが発火せず、通知が来ないまま
+    // 気づけなくなる。ping を定期的に送り、応答がなければ強制的に切断して再接続させる。
+    let lastReceivedAt = Date.now();
+    let heartbeatTimer: NodeJS.Timeout | undefined;
+    const markAlive = (): void => {
+      lastReceivedAt = Date.now();
+    };
+    const stopHeartbeat = (): void => {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    };
 
     ws.on("open", () => {
       logger.info("P2P地震情報 WebSocket に接続しました。");
       reconnectDelay = RECONNECT_BASE_DELAY_MS;
+      markAlive();
+
+      heartbeatTimer = setInterval(() => {
+        if (Date.now() - lastReceivedAt > HEARTBEAT_TIMEOUT_MS) {
+          logger.warn("P2P地震情報 WebSocket から応答がないため、接続を切断して再接続します。");
+          stopHeartbeat();
+          ws.terminate();
+          return;
+        }
+        ws.ping();
+      }, HEARTBEAT_INTERVAL_MS);
     });
 
+    ws.on("pong", markAlive);
+
     ws.on("message", (data) => {
+      markAlive();
       let message: JmaQuakeMessage;
       try {
         message = JSON.parse(data.toString()) as JmaQuakeMessage;
@@ -270,6 +305,7 @@ export function startEarthquakeWatcher(client: Client, minScale: number): void {
     });
 
     ws.on("close", (code) => {
+      stopHeartbeat();
       if (socket === ws) socket = undefined;
       if (isShuttingDown()) return;
 
