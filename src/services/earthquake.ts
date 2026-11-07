@@ -20,8 +20,11 @@ const RECONNECT_MAX_DELAY_MS = 5 * MINUTE_MS;
 const HEARTBEAT_INTERVAL_MS = 30 * SECOND_MS;
 /** この時間なにも受信（pong 含む）できなければ、接続が死んでいるとみなして再接続する。 */
 const HEARTBEAT_TIMEOUT_MS = 90 * SECOND_MS;
-/** WebSocket のハンドシェイク（接続確立）のタイムアウト。 */
-const HANDSHAKE_TIMEOUT_MS = 30 * SECOND_MS;
+/**
+ * WebSocket のハンドシェイク（接続確立）のタイムアウト。大きな地震の直後などは接続先が
+ * 混雑して確立に数十秒かかることがあるため、短すぎて毎回打ち切らないよう余裕を持たせる。
+ */
+const HANDSHAKE_TIMEOUT_MS = 60 * SECOND_MS;
 /** メンション済み地震を覚えておく件数（続報の重複メンション判定用）。 */
 const RECENT_EVENT_LIMIT = 50;
 
